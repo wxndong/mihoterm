@@ -3,7 +3,7 @@
 ## Requirements
 
 - Linux
-- Rust 1.85 or newer
+- Rust 1.88 or newer
 - Git
 - A live Mihomo instance only for opt-in integration tests
 
