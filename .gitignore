@@ -1,0 +1,9 @@
+/target/
+/dist/
+/.env
+/.env.*
+/.idea/
+/.vscode/
+*.local.toml
+*.secret
+*.swp

@@ -1,0 +1,21 @@
+[package]
+name = "mihoterm"
+version = "0.1.0-alpha.0"
+edition = "2024"
+rust-version = "1.85"
+description = "A tiny, fast, keyboard-first TUI for Mihomo on Linux."
+license = "MIT"
+repository = "https://github.com/wxndong/mihoterm"
+readme = "README.md"
+keywords = ["mihomo", "tui", "proxy", "linux", "terminal"]
+categories = ["command-line-utilities", "network-programming"]
+publish = false
+
+[dependencies]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = "symbols"
