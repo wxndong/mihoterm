@@ -3,8 +3,8 @@
 A tiny, fast, keyboard-first TUI for [Mihomo](https://github.com/MetaCubeX/mihomo)
 on Linux.
 
-> **Status:** pre-alpha. The repository is being built in small, reviewed
-> increments and is not ready for daily use yet.
+> **Status:** pre-alpha. Read-only attach mode is under active development and
+> is not ready for daily use yet.
 
 MihoTerm is an independent client for the Mihomo external-controller API. It
 does not provide or bundle proxy services, subscription content, credentials,
@@ -46,7 +46,7 @@ or a Mihomo executable.
 
 ## Development
 
-Rust 1.85 or newer is required.
+Rust 1.88 or newer is required.
 
 ```console
 $ ./scripts/ci-local.sh
@@ -56,6 +56,30 @@ See [Development](docs/development.md) and
 [Architecture](docs/architecture.md) for the project contracts. The
 [API client contract](docs/api-client.md) defines controller URL,
 authentication, and error-handling behavior.
+
+## Current command line
+
+MihoTerm attaches to `http://127.0.0.1:9090` by default:
+
+```console
+$ cargo run
+```
+
+Use an explicit controller or a permission-restricted secret file when needed:
+
+```console
+$ cargo run -- --controller http://127.0.0.1:19090 \
+    --secret-file ~/.config/mihoterm/controller.secret
+$ cargo run -- status
+```
+
+The TUI is keyboard-first:
+
+- `Up` and `Down` move within the focused list.
+- `Left`, `Right`, or `Tab` switch between policy groups and proxies.
+- `/` searches the focused list.
+- `r` requests a background refresh.
+- `q` or `Ctrl-C` exits.
 
 ## Security and privacy
 

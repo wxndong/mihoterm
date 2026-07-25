@@ -14,3 +14,8 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and proxy state.
 - Mock-controller contract tests covering authentication, URL prefixes,
   response parsing, and error redaction.
+- Read-only, non-blocking terminal views for policy groups and proxies.
+- Arrow-key focus and movement, list search, manual refresh, and a sanitized
+  headless status command.
+- Permission checks for controller secret files and reliable terminal
+  restoration on normal exit, signals, errors, and panics.

@@ -1,7 +1,9 @@
 mod support;
 
+use std::process::Command;
+
 use mihoterm::mihomo::{ApiClient, ApiError};
-use support::spawn_json_once;
+use support::{spawn_json_once, spawn_snapshot_server};
 
 #[tokio::test]
 async fn version_request_uses_prefix_and_bearer_auth() {
@@ -80,4 +82,24 @@ async fn errors_do_not_include_response_bodies() {
         }
     );
     assert!(!rendered.contains("response-test-secret"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn status_command_prints_only_sanitized_summary() {
+    let controller = spawn_snapshot_server().await;
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(env!("CARGO_BIN_EXE_mihoterm"))
+            .args(["--controller", &controller, "status"])
+            .output()
+            .expect("status binary should run")
+    })
+    .await
+    .expect("status task should finish");
+
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("stdout should be UTF-8"),
+        "Mihomo v1.19.29 | mode rule | 1 policy groups\n"
+    );
+    assert!(output.stderr.is_empty());
 }
