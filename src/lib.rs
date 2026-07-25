@@ -7,4 +7,5 @@ pub mod cli;
 pub mod config;
 pub mod mihomo;
 pub mod probe;
+pub mod profile;
 pub mod tui;

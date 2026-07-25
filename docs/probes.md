@@ -32,8 +32,21 @@ MihoTerm passes an explicit URL, timeout, and expected HTTP status.
 ## Custom targets
 
 The probe model validates a printable name, HTTPS URL, expected status or
-range, and a timeout from 100 to 60000 milliseconds. Loading custom targets
-from the XDG configuration is part of the profile/configuration milestone.
+range, and a timeout from 100 to 60000 milliseconds. Up to 32 additional
+targets can be declared in the owner-only XDG configuration:
+
+```toml
+[[probes]]
+name = "Example"
+url = "https://example.com/health"
+expected = "200-299"
+timeout_ms = 3000
+```
+
+`expected` defaults to `200-299` and `timeout_ms` defaults to `5000`. Names
+must be unique, including built-in names. An explicitly selected missing,
+invalid, oversized, or group-readable configuration fails closed before the
+TUI starts.
 
 Probe URLs are treated as sensitive because a custom query may contain private
 data. Their debug representation is redacted.

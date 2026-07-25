@@ -23,3 +23,8 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Separate Google, OpenAI/Codex, and GitHub delay probes with explicit expected
   HTTP statuses.
 - A validated, redacted custom-probe model for the upcoming XDG configuration.
+- Owner-only XDG configuration loading for custom HTTPS probe targets.
+- Named profile import from a protected HTTPS URL file or local Mihomo YAML.
+- Bounded downloads, structural YAML validation, private storage, serialized
+  mutations, atomic updates, and one-step rollback for managed profiles.
+- Profile management commands that never alter a running Mihomo instance.

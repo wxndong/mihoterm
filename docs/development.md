@@ -36,3 +36,8 @@ MihoTerm follows the XDG base directory specification:
 - runtime data: `$XDG_RUNTIME_DIR/mihoterm`
 
 Environment variables use the `MIHOTERM_` prefix.
+
+`MIHOTERM_CONFIG` overrides the configuration file and
+`MIHOTERM_STATE_DIR` overrides persistent state. Tests and development
+commands should use dedicated temporary values instead of the user's normal
+directories.
