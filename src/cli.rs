@@ -11,6 +11,14 @@ const DEFAULT_CONTROLLER: &str = "http://127.0.0.1:9090";
     about = "A tiny, fast, keyboard-first TUI for Mihomo on Linux."
 )]
 pub struct Cli {
+    /// User configuration file.
+    #[arg(long, env = "MIHOTERM_CONFIG", value_name = "PATH")]
+    pub config: Option<PathBuf>,
+
+    /// Directory for managed profiles and other persistent state.
+    #[arg(long, env = "MIHOTERM_STATE_DIR", value_name = "PATH")]
+    pub state_dir: Option<PathBuf>,
+
     /// Mihomo external-controller URL.
     #[arg(
         long,
@@ -55,13 +63,62 @@ pub struct Cli {
 pub enum Command {
     /// Print a sanitized one-line controller status without opening the TUI.
     Status,
+
+    /// Manage validated Mihomo profiles without changing a running instance.
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommand,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum ProfileCommand {
+    /// Add a named profile from a protected URL file or local YAML file.
+    Add {
+        /// Stable profile identifier.
+        id: String,
+
+        /// Owner-only file containing one HTTPS subscription URL.
+        #[arg(
+            long,
+            value_name = "PATH",
+            required_unless_present = "file",
+            conflicts_with = "file"
+        )]
+        url_file: Option<PathBuf>,
+
+        /// Local Mihomo YAML file.
+        #[arg(long, value_name = "PATH")]
+        file: Option<PathBuf>,
+    },
+
+    /// Refresh a profile from its stored source.
+    Update {
+        /// Stable profile identifier.
+        id: String,
+    },
+
+    /// Swap the current profile with its previous validated version.
+    Rollback {
+        /// Stable profile identifier.
+        id: String,
+    },
+
+    /// List managed profiles without revealing their sources.
+    List,
+
+    /// Print the validated YAML path for integration with Mihomo.
+    Path {
+        /// Stable profile identifier.
+        id: String,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use clap::Parser;
 
-    use super::{Cli, Command, DEFAULT_CONTROLLER};
+    use super::{Cli, Command, DEFAULT_CONTROLLER, ProfileCommand};
 
     #[test]
     fn defaults_to_the_local_controller_and_tui() {
@@ -90,5 +147,49 @@ mod tests {
         let result = Cli::try_parse_from(["mihoterm", "--refresh-ms", "10"]);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_a_profile_url_file_without_exposing_a_url_argument() {
+        let cli = Cli::try_parse_from([
+            "mihoterm",
+            "--state-dir",
+            "/tmp/mihoterm-state",
+            "profile",
+            "add",
+            "primary",
+            "--url-file",
+            "/tmp/subscription.url",
+        ])
+        .expect("profile add should parse");
+
+        assert!(matches!(
+            cli.command,
+            Some(Command::Profile {
+                command: ProfileCommand::Add {
+                    id,
+                    url_file: Some(_),
+                    file: None,
+                },
+            }) if id == "primary"
+        ));
+    }
+
+    #[test]
+    fn profile_add_requires_exactly_one_source() {
+        let missing = Cli::try_parse_from(["mihoterm", "profile", "add", "primary"]);
+        let conflicting = Cli::try_parse_from([
+            "mihoterm",
+            "profile",
+            "add",
+            "primary",
+            "--url-file",
+            "/tmp/subscription.url",
+            "--file",
+            "/tmp/profile.yaml",
+        ]);
+
+        assert!(missing.is_err());
+        assert!(conflicting.is_err());
     }
 }

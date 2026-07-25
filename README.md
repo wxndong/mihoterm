@@ -25,13 +25,16 @@ or a Mihomo executable.
   latest recorded delay.
 - Select proxies and modes through an explicit confirmation step.
 - Probe Google, OpenAI, or GitHub without changing the active proxy.
+- Load additional HTTPS probe targets from a protected TOML configuration.
+- Import Mihomo YAML from a protected subscription URL file or local file.
+- Validate, atomically update, and roll back named profiles without touching a
+  running Mihomo instance.
 
 ## Planned capabilities
 
-- Load custom HTTPS probe targets from the user configuration.
 - Inspect live traffic, providers, and connections.
-- Import a subscription URL or local YAML as a named profile.
-- Validate, atomically update, and roll back managed profiles.
+- Start an explicitly requested, isolated Mihomo child process from a managed
+  profile.
 - Ship static binaries for x86_64, aarch64, and armv7 Linux.
 
 ## Non-goals
@@ -91,6 +94,41 @@ The TUI is keyboard-first:
 - `q` or `Ctrl-C` exits.
 
 See [Probe semantics](docs/probes.md) before interpreting delay results.
+
+## Configuration and profiles
+
+The default configuration file is
+`$XDG_CONFIG_HOME/mihoterm/config.toml` (normally
+`~/.config/mihoterm/config.toml`). It must be readable only by its owner.
+Additional probe targets use this format:
+
+```toml
+[[probes]]
+name = "Example"
+url = "https://example.com/health"
+expected = "204"
+timeout_ms = 3000
+```
+
+Subscription URLs are accepted only through an owner-only file, keeping them
+out of shell history and process listings:
+
+```console
+$ install -d -m 700 ~/.config/mihoterm
+$ install -m 600 /dev/null ~/.config/mihoterm/subscription.url
+$ $EDITOR ~/.config/mihoterm/subscription.url
+$ mihoterm profile add primary \
+    --url-file ~/.config/mihoterm/subscription.url
+$ mihoterm profile update primary
+$ mihoterm profile rollback primary
+$ mihoterm profile list
+```
+
+A local Mihomo YAML file can be imported with
+`mihoterm profile add primary --file ./profile.yaml`. Profile commands only
+manage private local files; they never reload or modify an attached Mihomo
+instance. See [Profile management](docs/profiles.md) for the complete storage
+and failure contract.
 
 ## Security and privacy
 

@@ -1,6 +1,12 @@
+mod paths;
+mod user;
+
 use std::{env, fs, os::unix::fs::PermissionsExt, path::Path};
 
 use thiserror::Error;
+
+pub use paths::{AppPaths, PathError};
+pub use user::{UserConfigError, load_probe_targets};
 
 const MAX_SECRET_BYTES: u64 = 8 * 1024;
 

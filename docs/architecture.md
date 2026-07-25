@@ -41,12 +41,15 @@ started.
 5. Secrets never implement `Debug` in a form that reveals their value.
 6. A panic or signal must restore the terminal before process exit.
 7. Unsupported Mihomo API capabilities degrade visibly and safely.
+8. Profile sources and probe URLs are never accepted as command-line values.
+9. Concurrent profile mutations are rejected through an advisory file lock.
 
 ## Module boundaries
 
 - `app`: state transitions and commands.
 - `tui`: terminal lifecycle, input mapping, and rendering.
 - `mihomo`: typed API transport and compatibility handling.
-- `profile`: subscription source storage, validation, update, and rollback.
+- `profile`: protected source storage, bounded loading, validation, atomic
+  update, and rollback.
 - `runtime`: isolated child-process lifecycle.
 - `config`: XDG paths and user preferences.
