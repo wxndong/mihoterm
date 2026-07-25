@@ -19,3 +19,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   headless status command.
 - Permission checks for controller secret files and reliable terminal
   restoration on normal exit, signals, errors, and panics.
+- Confirmed proxy selection and Mihomo mode changes through typed API writes.
+- Separate Google, OpenAI/Codex, and GitHub delay probes with explicit expected
+  HTTP statuses.
+- A validated, redacted custom-probe model for the upcoming XDG configuration.

@@ -2,12 +2,14 @@ use std::{fmt, sync::Arc, time::Duration};
 
 use reqwest::{Method, RequestBuilder};
 use secrecy::{ExposeSecret, SecretString};
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 use url::Url;
+
+use crate::probe::ProbeTarget;
 
 use super::{
     error::{ApiError, RequestFailure},
-    model::{ProxiesResponse, RuntimeConfig, VersionInfo},
+    model::{DelayResponse, OperatingMode, ProxiesResponse, RuntimeConfig, VersionInfo},
 };
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -64,6 +66,55 @@ impl ApiClient {
         self.get_json("get proxies", "proxies").await
     }
 
+    pub async fn select_proxy(&self, group: &str, proxy: &str) -> Result<(), ApiError> {
+        #[derive(Serialize)]
+        struct Selection<'a> {
+            name: &'a str,
+        }
+
+        let operation = "select proxy";
+        let endpoint = self.endpoint_segments(operation, &["proxies", group])?;
+        let request = self.authorize(
+            self.http
+                .request(Method::PUT, endpoint)
+                .json(&Selection { name: proxy }),
+        );
+        self.send_empty(operation, request).await
+    }
+
+    pub async fn set_mode(&self, mode: OperatingMode) -> Result<(), ApiError> {
+        #[derive(Serialize)]
+        struct ModeSelection<'a> {
+            mode: &'a str,
+        }
+
+        let operation = "set mode";
+        let endpoint = self.endpoint_segments(operation, &["configs"])?;
+        let request = self.authorize(self.http.request(Method::PATCH, endpoint).json(
+            &ModeSelection {
+                mode: mode.as_str(),
+            },
+        ));
+        self.send_empty(operation, request).await
+    }
+
+    pub async fn probe_delay(
+        &self,
+        proxy: &str,
+        target: &ProbeTarget,
+    ) -> Result<DelayResponse, ApiError> {
+        let operation = "probe proxy";
+        let mut endpoint = self.endpoint_segments(operation, &["proxies", proxy, "delay"])?;
+        endpoint
+            .query_pairs_mut()
+            .append_pair("url", target.url().as_str())
+            .append_pair("timeout", &target.timeout_ms().to_string())
+            .append_pair("expected", target.expected());
+        let request = self.authorize(self.http.request(Method::GET, endpoint));
+
+        self.send_json(operation, request).await
+    }
+
     async fn get_json<T>(&self, operation: &'static str, path: &str) -> Result<T, ApiError>
     where
         T: DeserializeOwned,
@@ -73,6 +124,17 @@ impl ApiClient {
             .join(path)
             .map_err(|_| ApiError::InvalidEndpoint { operation })?;
         let request = self.authorize(self.http.request(Method::GET, endpoint));
+        self.send_json(operation, request).await
+    }
+
+    async fn send_json<T>(
+        &self,
+        operation: &'static str,
+        request: RequestBuilder,
+    ) -> Result<T, ApiError>
+    where
+        T: DeserializeOwned,
+    {
         let response = request.send().await.map_err(|error| ApiError::Request {
             operation,
             kind: classify_request_error(&error),
@@ -108,6 +170,42 @@ impl ApiClient {
         }
 
         serde_json::from_slice(&body).map_err(|_| ApiError::InvalidResponse { operation })
+    }
+
+    async fn send_empty(
+        &self,
+        operation: &'static str,
+        request: RequestBuilder,
+    ) -> Result<(), ApiError> {
+        let response = request.send().await.map_err(|error| ApiError::Request {
+            operation,
+            kind: classify_request_error(&error),
+        })?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(ApiError::UnexpectedStatus {
+                operation,
+                status: response.status().as_u16(),
+            })
+        }
+    }
+
+    fn endpoint_segments(
+        &self,
+        operation: &'static str,
+        segments: &[&str],
+    ) -> Result<Url, ApiError> {
+        let mut endpoint = self.base_url.clone();
+        let mut path = endpoint
+            .path_segments_mut()
+            .map_err(|_| ApiError::InvalidEndpoint { operation })?;
+        path.pop_if_empty();
+        for segment in segments {
+            path.push(segment);
+        }
+        drop(path);
+        Ok(endpoint)
     }
 
     fn authorize(&self, request: RequestBuilder) -> RequestBuilder {

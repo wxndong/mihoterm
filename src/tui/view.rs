@@ -141,7 +141,11 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
     let help = match app.input_mode {
         InputMode::Search => format!("/{}  Enter keep  Esc clear", app.search),
-        InputMode::Normal => "Arrows move/focus  Tab switch  / search  r refresh  q quit".into(),
+        InputMode::Confirm => "y/Enter confirm  n/Esc cancel".into(),
+        InputMode::Normal => format!(
+            "Arrows move/focus  Enter select  m mode  d probe [{}]  p target  / search  r refresh  q quit",
+            app.current_probe().name()
+        ),
     };
     let line = Line::from(vec![
         Span::styled(&app.status.message, status_style),

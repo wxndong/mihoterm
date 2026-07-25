@@ -12,7 +12,7 @@ use tokio::{
 };
 
 use crate::{
-    app::{Action, App, Input, InputMode, Snapshot, fetch_snapshot},
+    app::{Action, App, Input, InputMode, Operation, OperationSuccess, Snapshot, fetch_snapshot},
     mihomo::{ApiClient, ApiError},
 };
 
@@ -38,12 +38,16 @@ pub async fn run(
     let mut terminate = signal(SignalKind::terminate())?;
     let (snapshot_sender, mut snapshot_receiver) = mpsc::channel(1);
     let (refresh_sender, refresh_receiver) = mpsc::channel(1);
-    let worker = tokio::spawn(refresh_worker(
-        client,
+    let refresh_worker = tokio::spawn(refresh_worker(
+        client.clone(),
         refresh_interval,
         snapshot_sender,
         refresh_receiver,
     ));
+    let (operation_sender, operation_receiver) = mpsc::channel(1);
+    let (result_sender, mut result_receiver) = mpsc::channel(1);
+    let operation_worker =
+        tokio::spawn(operation_worker(client, operation_receiver, result_sender));
 
     let result = async {
         loop {
@@ -55,6 +59,13 @@ pub async fn run(
                         return Err(TuiError::InputEnded);
                     };
                     app.apply_refresh(snapshot);
+                }
+                operation = result_receiver.recv() => {
+                    let Some(operation) = operation else {
+                        return Err(TuiError::InputEnded);
+                    };
+                    app.apply_operation_result(operation);
+                    let _ = refresh_sender.try_send(());
                 }
                 event = events.next() => {
                     let Some(event) = event else {
@@ -71,6 +82,11 @@ pub async fn run(
                             Action::Refresh => {
                                 let _ = refresh_sender.try_send(());
                             }
+                            Action::Execute(operation) => {
+                                if operation_sender.try_send(operation).is_err() {
+                                    app.reject_operation();
+                                }
+                            }
                         }
                     }
                 }
@@ -83,7 +99,8 @@ pub async fn run(
     }
     .await;
 
-    worker.abort();
+    refresh_worker.abort();
+    operation_worker.abort();
     result
 }
 
@@ -106,6 +123,39 @@ async fn refresh_worker(
                     return;
                 }
             }
+        }
+    }
+}
+
+async fn operation_worker(
+    client: ApiClient,
+    mut operation_receiver: mpsc::Receiver<Operation>,
+    result_sender: mpsc::Sender<Result<OperationSuccess, ApiError>>,
+) {
+    while let Some(operation) = operation_receiver.recv().await {
+        let result = match operation {
+            Operation::SelectProxy { group, proxy } => client
+                .select_proxy(&group, &proxy)
+                .await
+                .map(|()| OperationSuccess::ProxySelected { group, proxy }),
+            Operation::SetMode { mode } => client
+                .set_mode(mode)
+                .await
+                .map(|()| OperationSuccess::ModeChanged { mode }),
+            Operation::Probe { proxy, target } => {
+                let target_name = target.name().to_owned();
+                client.probe_delay(&proxy, &target).await.map(|response| {
+                    OperationSuccess::ProbeMeasured {
+                        proxy,
+                        target: target_name,
+                        delay_ms: response.delay,
+                    }
+                })
+            }
+        };
+
+        if result_sender.send(result).await.is_err() {
+            return;
         }
     }
 }
@@ -147,11 +197,15 @@ mod tests {
     use crate::app::{Input, InputMode};
 
     #[test]
-    fn q_quits_only_outside_search() {
+    fn q_quits_only_in_normal_mode() {
         let key = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
 
         assert_eq!(map_key(key, InputMode::Normal), Some(Input::Quit));
         assert_eq!(map_key(key, InputMode::Search), Some(Input::Character('q')));
+        assert_eq!(
+            map_key(key, InputMode::Confirm),
+            Some(Input::Character('q'))
+        );
     }
 
     #[test]

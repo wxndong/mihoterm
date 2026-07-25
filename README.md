@@ -3,8 +3,8 @@
 A tiny, fast, keyboard-first TUI for [Mihomo](https://github.com/MetaCubeX/mihomo)
 on Linux.
 
-> **Status:** pre-alpha. Read-only attach mode is under active development and
-> is not ready for daily use yet.
+> **Status:** pre-alpha. Attach and safe-control modes are under active
+> development and are not ready for daily use yet.
 
 MihoTerm is an independent client for the Mihomo external-controller API. It
 does not provide or bundle proxy services, subscription content, credentials,
@@ -19,12 +19,17 @@ or a Mihomo executable.
   isolated instance.
 - Present failures honestly instead of hiding them behind a single health score.
 
+## Current capabilities
+
+- Inspect the Mihomo version, mode, policy groups, proxies, health state, and
+  latest recorded delay.
+- Select proxies and modes through an explicit confirmation step.
+- Probe Google, OpenAI, or GitHub without changing the active proxy.
+
 ## Planned capabilities
 
-- Inspect version, mode, traffic, policy groups, proxies, providers, and
-  connections.
-- Select proxies and modes without editing YAML by hand.
-- Probe Google, OpenAI, GitHub, or a custom HTTPS target.
+- Load custom HTTPS probe targets from the user configuration.
+- Inspect live traffic, providers, and connections.
 - Import a subscription URL or local YAML as a named profile.
 - Validate, atomically update, and roll back managed profiles.
 - Ship static binaries for x86_64, aarch64, and armv7 Linux.
@@ -77,9 +82,15 @@ The TUI is keyboard-first:
 
 - `Up` and `Down` move within the focused list.
 - `Left`, `Right`, or `Tab` switch between policy groups and proxies.
+- `Enter` selects a proxy after confirmation.
+- `m` cycles to the next Mihomo mode after confirmation.
+- `d` probes the selected proxy against the active target.
+- `p` cycles through Google, OpenAI, and GitHub probe targets.
 - `/` searches the focused list.
 - `r` requests a background refresh.
 - `q` or `Ctrl-C` exits.
+
+See [Probe semantics](docs/probes.md) before interpreting delay results.
 
 ## Security and privacy
 

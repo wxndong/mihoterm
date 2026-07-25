@@ -2,6 +2,49 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperatingMode {
+    Rule,
+    Global,
+    Direct,
+}
+
+impl OperatingMode {
+    #[must_use]
+    pub fn from_api(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "rule" => Some(Self::Rule),
+            "global" => Some(Self::Global),
+            "direct" => Some(Self::Direct),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Rule => "rule",
+            Self::Global => "global",
+            Self::Direct => "direct",
+        }
+    }
+
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Rule => Self::Global,
+            Self::Global => Self::Direct,
+            Self::Direct => Self::Rule,
+        }
+    }
+}
+
+impl std::fmt::Display for OperatingMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct VersionInfo {
     #[serde(default)]
@@ -87,9 +130,17 @@ pub struct DelaySample {
     pub delay: u32,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct DelayResponse {
+    #[serde(default)]
+    pub delay: u32,
+    #[serde(default, rename = "meanDelay")]
+    pub mean_delay: Option<u32>,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ProxiesResponse, ProxyInfo};
+    use super::{OperatingMode, ProxiesResponse, ProxyInfo};
 
     #[test]
     fn classifies_groups_without_relying_only_on_members() {
@@ -128,5 +179,13 @@ mod tests {
 
         assert_eq!(response.groups()[0].name, "Auto");
         assert_eq!(response.proxies["Proxy A"].latest_delay_ms(), Some(42));
+    }
+
+    #[test]
+    fn cycles_supported_operating_modes() {
+        assert_eq!(OperatingMode::Rule.next(), OperatingMode::Global);
+        assert_eq!(OperatingMode::Global.next(), OperatingMode::Direct);
+        assert_eq!(OperatingMode::Direct.next(), OperatingMode::Rule);
+        assert_eq!(OperatingMode::from_api("RULE"), Some(OperatingMode::Rule));
     }
 }
