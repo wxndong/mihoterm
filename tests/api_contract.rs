@@ -2,8 +2,12 @@ mod support;
 
 use std::process::Command;
 
-use mihoterm::mihomo::{ApiClient, ApiError};
+use mihoterm::{
+    mihomo::{ApiClient, ApiError, OperatingMode},
+    probe::ProbeTarget,
+};
 use support::{spawn_json_once, spawn_snapshot_server};
+use url::Url;
 
 #[tokio::test]
 async fn version_request_uses_prefix_and_bearer_auth() {
@@ -102,4 +106,85 @@ async fn status_command_prints_only_sanitized_summary() {
         "Mihomo v1.19.29 | mode rule | 1 policy groups\n"
     );
     assert!(output.stderr.is_empty());
+}
+
+#[tokio::test]
+async fn proxy_selection_encodes_dynamic_paths_and_json() {
+    let (controller, request) = spawn_json_once("204 No Content", "").await;
+    let client = ApiClient::new(&controller, None).expect("client should initialize");
+
+    client
+        .select_proxy("Primary / Auto", "Proxy B")
+        .await
+        .expect("selection should succeed");
+    let request = request.await.expect("mock should capture request");
+    let (headers, body) = request
+        .split_once("\r\n\r\n")
+        .expect("request should contain a body separator");
+
+    assert!(headers.starts_with("PUT /api/proxies/Primary%20%2F%20Auto HTTP/1.1"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).expect("body should be JSON"),
+        serde_json::json!({"name": "Proxy B"})
+    );
+}
+
+#[tokio::test]
+async fn mode_update_uses_the_configs_patch() {
+    let (controller, request) = spawn_json_once("204 No Content", "").await;
+    let client = ApiClient::new(&controller, None).expect("client should initialize");
+
+    client
+        .set_mode(OperatingMode::Global)
+        .await
+        .expect("mode should update");
+    let request = request.await.expect("mock should capture request");
+
+    assert!(request.starts_with("PATCH /api/configs HTTP/1.1\r\n"));
+    assert!(request.ends_with(r#"{"mode":"global"}"#));
+}
+
+#[tokio::test]
+async fn probe_request_preserves_target_and_expected_status() {
+    let (controller, request) = spawn_json_once("200 OK", r#"{"delay":47,"meanDelay":51}"#).await;
+    let client = ApiClient::new(&controller, None).expect("client should initialize");
+    let target = ProbeTarget::new(
+        "Example",
+        "https://example.com/health?region=test",
+        "200-299",
+        3_000,
+    )
+    .expect("probe should be valid");
+
+    let result = client
+        .probe_delay("Proxy A", &target)
+        .await
+        .expect("probe should succeed");
+    let request = request.await.expect("mock should capture request");
+    let request_target = request
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .expect("request target should exist");
+    let request_url =
+        Url::parse(&format!("http://mock{request_target}")).expect("target should parse");
+    let query = request_url
+        .query_pairs()
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    assert_eq!(request_url.path(), "/api/proxies/Proxy%20A/delay");
+    assert_eq!(
+        query.get("url").map(|value| value.as_ref()),
+        Some("https://example.com/health?region=test")
+    );
+    assert_eq!(
+        query.get("timeout").map(|value| value.as_ref()),
+        Some("3000")
+    );
+    assert_eq!(
+        query.get("expected").map(|value| value.as_ref()),
+        Some("200-299")
+    );
+    assert_eq!(result.delay, 47);
+    assert_eq!(result.mean_delay, Some(51));
 }

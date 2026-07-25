@@ -1,8 +1,8 @@
 # Mihomo API Client
 
 The API client is the only module allowed to construct external-controller
-requests. It currently supports read-only version, runtime configuration, and
-proxy snapshots.
+requests. It supports version, runtime configuration, and proxy snapshots,
+plus focused proxy selection, mode changes, and delay probes.
 
 ## Controller URL
 
@@ -28,6 +28,10 @@ command-line argument.
 Every request has a total timeout and a bounded JSON response. Errors expose an
 operation, failure class, or HTTP status without copying the response body.
 This keeps diagnostics useful without leaking controller data.
+
+Dynamic policy-group and proxy names are encoded as individual URL path
+segments. Mutating requests use typed JSON payloads and must pass through a
+user confirmation in the application layer.
 
 Contract tests bind to an operating-system-assigned loopback port and never
 connect to a live Mihomo instance.

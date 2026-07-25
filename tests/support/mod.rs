@@ -1,6 +1,6 @@
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     sync::oneshot,
 };
 
@@ -17,25 +17,7 @@ pub async fn spawn_json_once(status: &str, body: &str) -> (String, oneshot::Rece
 
     tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.expect("mock should accept");
-        let mut request = Vec::with_capacity(1024);
-        let mut buffer = [0_u8; 1024];
-
-        loop {
-            let read = stream.read(&mut buffer).await.expect("mock should read");
-            if read == 0 {
-                break;
-            }
-            request.extend_from_slice(&buffer[..read]);
-            if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                break;
-            }
-            assert!(
-                request.len() < 16 * 1024,
-                "request headers are unexpectedly large"
-            );
-        }
-
-        let request = String::from_utf8(request).expect("request should be UTF-8");
+        let request = read_request(&mut stream).await;
         request_sender.send(request).ok();
 
         let response = format!(
@@ -62,24 +44,7 @@ pub async fn spawn_snapshot_server() -> String {
     tokio::spawn(async move {
         for _ in 0..3 {
             let (mut stream, _) = listener.accept().await.expect("snapshot should accept");
-            let mut request = Vec::with_capacity(1024);
-            let mut buffer = [0_u8; 1024];
-
-            loop {
-                let read = stream
-                    .read(&mut buffer)
-                    .await
-                    .expect("snapshot should read");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buffer[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
-
-            let request = String::from_utf8(request).expect("request should be UTF-8");
+            let request = read_request(&mut stream).await;
             let path = request
                 .lines()
                 .next()
@@ -105,4 +70,42 @@ pub async fn spawn_snapshot_server() -> String {
     });
 
     format!("http://{address}/api/")
+}
+
+async fn read_request(stream: &mut TcpStream) -> String {
+    let mut request = Vec::with_capacity(1024);
+    let mut buffer = [0_u8; 1024];
+    let mut expected_length = None;
+
+    loop {
+        let read = stream.read(&mut buffer).await.expect("mock should read");
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..read]);
+        assert!(request.len() < 64 * 1024, "request is unexpectedly large");
+
+        if expected_length.is_none()
+            && let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+        {
+            let body_start = header_end + 4;
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or_default();
+            expected_length = Some(body_start + content_length);
+        }
+
+        if expected_length.is_some_and(|length| request.len() >= length) {
+            break;
+        }
+    }
+
+    String::from_utf8(request).expect("request should be UTF-8")
 }
