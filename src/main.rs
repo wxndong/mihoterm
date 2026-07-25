@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 fn main() {
     println!("MihoTerm is under active development.");
 }

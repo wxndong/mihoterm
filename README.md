@@ -53,7 +53,9 @@ $ ./scripts/ci-local.sh
 ```
 
 See [Development](docs/development.md) and
-[Architecture](docs/architecture.md) for the project contracts.
+[Architecture](docs/architecture.md) for the project contracts. The
+[API client contract](docs/api-client.md) defines controller URL,
+authentication, and error-handling behavior.
 
 ## Security and privacy
 
