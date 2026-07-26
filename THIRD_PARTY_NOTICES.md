@@ -15,6 +15,12 @@ program licensed under GPL-3.0. Each archive includes:
 - a copy of Mihomo's GPL-3.0 license;
 - links to the corresponding upstream release and source tag.
 
-Bundling the two executables for installation convenience does not change
-MihoTerm's license and does not imply affiliation with or endorsement by
-MetaCubeX.
+Portable archives also contain unmodified
+[MetaCubeX/meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat)
+GeoIP and GeoSite files, which the upstream project licenses under GPL-3.0.
+Each archive records their immutable asset commit and SHA-256 values and
+includes a separate copy of that project's license.
+
+Bundling these separate components for installation convenience does not
+change MihoTerm's license and does not imply affiliation with or endorsement
+by MetaCubeX.

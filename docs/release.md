@@ -6,7 +6,8 @@ not dates.
 1. Update `CHANGELOG.md` and the crate version.
 2. Run `./scripts/ci-local.sh` from a clean checkout.
 3. Build and smoke-test every supported release target.
-4. Verify pinned Mihomo assets before assembling portable archives.
+4. Verify pinned Mihomo core and GeoIP/GeoSite assets before assembling
+   portable archives.
 5. Scan tracked files and Git history for secrets and personal data.
 6. Create an annotated tag on a `main` commit.
 7. Publish archives, third-party notices, and `SHA256SUMS`.
@@ -23,3 +24,5 @@ Planned first-release gates:
 
 Portable builds use Zig 0.16.0 and cargo-zigbuild 0.23.0. Mihomo asset names,
 versions, and SHA-256 values are reviewed in `packaging/mihomo-assets.tsv`.
+Standard data commits and SHA-256 values are reviewed in
+`packaging/geodata-assets.tsv`.

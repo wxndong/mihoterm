@@ -8,8 +8,10 @@ They contain:
 - one statically linked `mihoterm` executable;
 - one statically linked, unmodified official `mihomo` executable for the same
   CPU architecture;
-- MihoTerm's MIT license, Rust dependency licenses, Mihomo's GPL-3.0 license,
-  and exact core provenance.
+- checksum-pinned standard Mihomo GeoIP and GeoSite data for deterministic
+  cold starts;
+- MihoTerm's MIT license, Rust dependency licenses, upstream GPL-3.0 licenses,
+  and exact core and data provenance.
 
 No Rust toolchain, dynamic application libraries, root access, systemd unit,
 or distribution-specific package is required.
@@ -31,8 +33,9 @@ $ cd mihoterm-vVERSION-linux-ARCH
 $ ./mihoterm
 ```
 
-Keep `mihoterm` and `mihomo` together. MihoTerm automatically selects the
-executable beside itself. On first run, it accepts the subscription URL only
+Keep the extracted directory intact. MihoTerm automatically selects the
+`mihomo` executable and standard data beside itself, then copies the data into
+the private per-run home. On first run, it accepts the subscription URL only
 through a hidden interactive prompt; the URL does not enter shell history or
 the process list.
 
@@ -64,6 +67,6 @@ directories, normally `~/.local/state/mihoterm`. Transient runtime data uses
 the XDG runtime directory when available. MihoTerm does not install a service,
 change system proxy settings, or require privileged ports.
 
-The bundled Mihomo executable is a separate GPL-3.0 program. Its exact
-version, upstream checksum, release, source, and license are included in every
-archive.
+The bundled Mihomo executable and MetaCubeX rule data are separate GPL-3.0
+works. Their exact versions or commits, upstream checksums, sources, and
+licenses are included in every archive.

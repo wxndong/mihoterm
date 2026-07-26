@@ -2,6 +2,8 @@
 set -euo pipefail
 
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=build-limits.sh
+source "$project_dir/scripts/build-limits.sh"
 output="${1:-$project_dir/THIRD-PARTY-LICENSES.html}"
 if [[ "$output" != /* ]]; then
   output="$project_dir/$output"

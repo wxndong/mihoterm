@@ -29,6 +29,8 @@ const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(2);
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const RUNTIME_CONFIG: &str = "runtime.yaml";
 const RUNTIME_LOG: &str = "mihomo.log";
+const MAX_BUNDLED_DATA_BYTES: u64 = 64 * 1024 * 1024;
+const BUNDLED_DATA_FILES: [&str; 3] = ["geoip.metadb", "geoip.dat", "geosite.dat"];
 
 pub struct ManagedRuntime {
     child: Option<Child>,
@@ -72,6 +74,7 @@ impl ManagedRuntime {
         let temporary = runtime_dir.join("tmp");
         create_private_directory(&home)?;
         create_private_directory(&temporary)?;
+        seed_bundled_data(&executable, &home)?;
 
         let ports = PortReservations::new()?;
         let controller_port = ports.controller_port();
@@ -480,6 +483,31 @@ fn create_private_directory(path: &Path) -> Result<(), RuntimeError> {
         .map_err(|_| RuntimeError::RuntimeInitialization)
 }
 
+fn seed_bundled_data(executable: &Path, home: &Path) -> Result<(), RuntimeError> {
+    let Some(bundle_dir) = executable.parent() else {
+        return Ok(());
+    };
+
+    for name in BUNDLED_DATA_FILES {
+        let source = bundle_dir.join(name);
+        let metadata = match fs::symlink_metadata(&source) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(_) => return Err(RuntimeError::BundledData),
+        };
+        if !metadata.file_type().is_file() || metadata.len() > MAX_BUNDLED_DATA_BYTES {
+            return Err(RuntimeError::BundledData);
+        }
+
+        let destination = home.join(name);
+        fs::copy(&source, &destination).map_err(|_| RuntimeError::BundledData)?;
+        fs::set_permissions(&destination, fs::Permissions::from_mode(0o600))
+            .map_err(|_| RuntimeError::BundledData)?;
+    }
+
+    Ok(())
+}
+
 fn read_private_profile(path: &Path) -> Result<Vec<u8>, RuntimeError> {
     let metadata = fs::metadata(path).map_err(|_| RuntimeError::ProfileRead)?;
     if !metadata.is_file() || metadata.permissions().mode() & 0o077 != 0 {
@@ -575,7 +603,7 @@ mod tests {
 
     use super::{
         ManagedRuntime, PortReservations, bundled_mihomo_for, prepare_runtime_root,
-        read_private_profile, resolve_executable,
+        read_private_profile, resolve_executable, seed_bundled_data,
     };
 
     #[test]
@@ -609,6 +637,48 @@ mod tests {
             .expect("permissions should be set");
 
         assert_eq!(bundled_mihomo_for(&launcher), Some(core));
+        fs::remove_dir_all(base).expect("directory should be removed");
+    }
+
+    #[test]
+    fn bundled_data_is_copied_into_the_private_runtime_home() {
+        let base = temporary_directory();
+        let bundle = base.join("bundle");
+        let home = base.join("home");
+        fs::create_dir_all(&bundle).expect("bundle should be created");
+        fs::create_dir(&home).expect("home should be created");
+        fs::write(bundle.join("geoip.metadb"), b"fixture").expect("data should be written");
+
+        seed_bundled_data(&bundle.join("mihomo"), &home).expect("data should be seeded");
+
+        let destination = home.join("geoip.metadb");
+        assert_eq!(
+            fs::read(&destination).expect("seeded data should be readable"),
+            b"fixture"
+        );
+        assert_eq!(
+            fs::metadata(destination)
+                .expect("seeded data metadata should be readable")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        fs::remove_dir_all(base).expect("directory should be removed");
+    }
+
+    #[test]
+    fn bundled_data_rejects_symbolic_links() {
+        use std::os::unix::fs::symlink;
+
+        let base = temporary_directory();
+        let bundle = base.join("bundle");
+        let home = base.join("home");
+        fs::create_dir_all(&bundle).expect("bundle should be created");
+        fs::create_dir(&home).expect("home should be created");
+        symlink("/dev/null", bundle.join("geoip.metadb")).expect("link should be created");
+
+        assert!(seed_bundled_data(&bundle.join("mihomo"), &home).is_err());
         fs::remove_dir_all(base).expect("directory should be removed");
     }
 

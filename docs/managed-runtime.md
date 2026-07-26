@@ -23,14 +23,16 @@ profile.
 
 1. Resolve and verify the selected Mihomo executable.
 2. Create one mode `0700` per-run directory under the XDG runtime directory.
-3. Reserve two distinct ephemeral TCP ports on `127.0.0.1`.
-4. Read the owner-only managed profile and derive a hardened runtime YAML.
-5. Generate a 256-bit controller secret from the operating system RNG.
-6. Write the YAML and log as mode `0600` files.
-7. Run Mihomo `-t` against the exact derived YAML.
-8. Release the port reservations immediately before spawning Mihomo.
-9. Wait for the authenticated loopback controller to report its version.
-10. Open the TUI and show the mixed proxy endpoint in the header.
+3. Copy any regular, size-bounded bundled GeoIP/GeoSite files into the private
+   runtime home as mode `0600` files; symbolic links are rejected.
+4. Reserve two distinct ephemeral TCP ports on `127.0.0.1`.
+5. Read the owner-only managed profile and derive a hardened runtime YAML.
+6. Generate a 256-bit controller secret from the operating system RNG.
+7. Write the YAML and log as mode `0600` files.
+8. Run Mihomo `-t` against the exact derived YAML.
+9. Release the port reservations immediately before spawning Mihomo.
+10. Wait for the authenticated loopback controller to report its version.
+11. Open the TUI and show the mixed proxy endpoint in the header.
 
 The validation and live process both receive an empty inherited environment,
 a private home and temporary directory, and `umask 077`.

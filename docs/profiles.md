@@ -55,6 +55,9 @@ fails visibly instead of racing another update.
   fragment.
 - Redirects are limited and may not downgrade from HTTPS.
 - Environment proxy variables are not used by the profile downloader.
+- The downloader identifies as `clash.meta` because many subscription
+  services use that de facto identifier to return Mihomo-compatible YAML
+  instead of an encoded generic URI list.
 - URL files are limited to 16 KiB.
 - Profile downloads and local YAML files are limited to 16 MiB.
 - The response must be UTF-8 YAML with a mapping root.
