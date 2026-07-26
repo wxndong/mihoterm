@@ -7,6 +7,8 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0-alpha.1] - 2026-07-26
+
 ### Added
 
 - Initial project contracts and local validation entry point.
@@ -48,3 +50,6 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Request Mihomo-compatible YAML from subscription services that select their
   response format from the client identifier.
+
+[Unreleased]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.1...HEAD
+[0.1.0-alpha.1]: https://github.com/wxndong/mihoterm/releases/tag/v0.1.0-alpha.1

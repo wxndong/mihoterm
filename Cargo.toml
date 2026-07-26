@@ -1,6 +1,6 @@
 [package]
 name = "mihoterm"
-version = "0.1.0-alpha.0"
+version = "0.1.0-alpha.1"
 edition = "2024"
 rust-version = "1.88"
 description = "A tiny, fast, keyboard-first TUI for Mihomo on Linux."
