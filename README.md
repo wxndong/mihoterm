@@ -9,7 +9,9 @@ on Linux.
 MihoTerm is an independent client for the Mihomo external-controller API. It
 does not provide proxy services, subscription content, or credentials.
 Portable release archives include an unmodified, checksum-pinned official
-Mihomo executable so users do not need to install a separate runtime.
+Mihomo executable and its standard GeoIP/GeoSite data files so users do not
+need to install a separate runtime or bootstrap data through an unconfigured
+network.
 
 ## Goals
 
@@ -35,7 +37,7 @@ Mihomo executable so users do not need to install a separate runtime.
 - Guide first-run setup through a hidden terminal prompt and automatically find
   the Mihomo executable shipped beside MihoTerm.
 - Build self-contained Linux release archives with no dynamic-library, Rust,
-  Cargo, root, or systemd requirement.
+  Cargo, root, systemd, or first-start data-download requirement.
 
 ## Planned capabilities
 

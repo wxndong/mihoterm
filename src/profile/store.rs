@@ -17,6 +17,9 @@ const BACKUP_FILE: &str = "profile.previous.yaml";
 const SOURCE_FILE: &str = "source.toml";
 const LOCK_FILE: &str = ".lock";
 const MAX_DESCRIPTOR_BYTES: u64 = 64 * 1024;
+// Many subscription services use this de facto client identifier to return
+// Mihomo-compatible YAML instead of an encoded generic URI list.
+const SUBSCRIPTION_USER_AGENT: &str = "clash.meta";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub struct ProfileStore {
@@ -46,7 +49,7 @@ impl ProfileStore {
                     attempt.stop()
                 }
             }))
-            .user_agent(concat!("mihoterm/", env!("CARGO_PKG_VERSION")))
+            .user_agent(SUBSCRIPTION_USER_AGENT)
             .build()
             .map_err(|_| ProfileError::DownloadInitialization)?;
         Ok(Self { root, client })
@@ -317,8 +320,13 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::ProfileStore;
+    use super::{ProfileStore, SUBSCRIPTION_USER_AGENT};
     use crate::profile::{ProfileError, ProfileSource};
+
+    #[test]
+    fn subscription_user_agent_requests_mihomo_yaml() {
+        assert_eq!(SUBSCRIPTION_USER_AGENT, "clash.meta");
+    }
 
     #[tokio::test]
     async fn add_update_and_rollback_are_atomic_and_private() {

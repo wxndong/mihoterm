@@ -2,6 +2,8 @@
 set -euo pipefail
 
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=build-limits.sh
+source "$project_dir/scripts/build-limits.sh"
 target="${1:-x86_64-unknown-linux-musl}"
 
 cd "$project_dir"
@@ -50,7 +52,12 @@ for required in \
   "$bundle_dir/THIRD_PARTY_NOTICES.md" \
   "$bundle_dir/THIRD-PARTY-LICENSES.html" \
   "$bundle_dir/CORE-METADATA.txt" \
-  "$bundle_dir/licenses/Mihomo-GPL-3.0.txt"; do
+  "$bundle_dir/DATA-METADATA.txt" \
+  "$bundle_dir/geoip.metadb" \
+  "$bundle_dir/geoip.dat" \
+  "$bundle_dir/geosite.dat" \
+  "$bundle_dir/licenses/Mihomo-GPL-3.0.txt" \
+  "$bundle_dir/licenses/meta-rules-dat-GPL-3.0.txt"; do
   if [[ ! -f "$required" ]]; then
     echo "portable archive is missing: ${required##*/}" >&2
     exit 1
@@ -63,6 +70,16 @@ for executable in "$bundle_dir/mihoterm" "$bundle_dir/mihomo"; do
     exit 1
   fi
 done
+
+while IFS=$'\t' read -r geodata_asset geodata_sha256; do
+  if [[ -z "$geodata_asset" || "$geodata_asset" == \#* ]]; then
+    continue
+  fi
+  if [[ "$(sha256sum "$bundle_dir/$geodata_asset" | awk '{ print $1 }')" != "$geodata_sha256" ]]; then
+    echo "portable data checksum mismatch: $geodata_asset" >&2
+    exit 1
+  fi
+done <"$project_dir/packaging/geodata-assets.tsv"
 
 (
   cd "$project_dir/dist"

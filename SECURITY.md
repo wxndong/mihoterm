@@ -39,9 +39,11 @@ signals processes by name.
 ## Portable release supply chain
 
 Portable archives use statically linked MihoTerm binaries and unmodified
-official Mihomo release assets. Every Mihomo asset and its license are pinned
-by SHA-256 in the repository and verified before packaging. Each archive
-records the exact upstream version, release, source commit, and checksum.
+official Mihomo release assets. The core and standard GeoIP/GeoSite data files,
+plus their licenses, are pinned by immutable upstream commits and SHA-256 in
+the repository and verified before packaging. Each archive records the exact
+upstream version or asset commit, source location, and checksum.
 
 MihoTerm does not silently replace the bundled core at runtime. Core updates
-are reviewed and shipped through a new MihoTerm release.
+and bundled data revisions are reviewed and shipped through a new MihoTerm
+release.

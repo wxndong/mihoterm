@@ -40,4 +40,11 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   instance instead of implicitly connecting to another process.
 - Static portable bundle tooling with a checksum-pinned official Mihomo core,
   license separation, and reproducible archive metadata.
+- Checksum-pinned Mihomo GeoIP and GeoSite data for deterministic cold starts
+  when GitHub is unreachable before the proxy is running.
 - Ring-based rustls cryptography to reduce the static MihoTerm binary size.
+
+### Fixed
+
+- Request Mihomo-compatible YAML from subscription services that select their
+  response format from the client identifier.

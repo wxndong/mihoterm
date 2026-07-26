@@ -30,11 +30,18 @@ $ ./scripts/package-portable.sh x86_64-unknown-linux-musl
 $ ./scripts/ci-release-local.sh x86_64-unknown-linux-musl
 ```
 
-The packaging script downloads only the pinned official Mihomo asset and
-license, verifies both SHA-256 values, and writes release files under `dist/`.
-These tools are developer requirements only; the resulting archive has no
-toolchain dependency. `ci-release-local.sh` also rejects stale Rust dependency
-license notices and non-reproducible archives.
+The packaging script downloads only the pinned official Mihomo core, standard
+MetaCubeX GeoIP/GeoSite data, and their licenses. It verifies every SHA-256
+value and writes release files under `dist/`. These tools are developer
+requirements only; the resulting archive has no toolchain dependency.
+`ci-release-local.sh` also rejects stale Rust dependency license notices and
+non-reproducible archives.
+
+Local validation defaults to one quarter of the CPUs reported as available by
+`nproc` (at least one), so process affinity and cpuset limits are respected
+where the platform exposes them. Cargo, Rayon, and test workers share that
+budget. Set `MIHOTERM_BUILD_JOBS` explicitly only when a different limit is
+appropriate.
 
 The script checks formatting, linting, tests, the release build, and Git
 whitespace. If `gitleaks` is installed, it also scans repository history.

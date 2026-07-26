@@ -17,6 +17,9 @@ pub enum RuntimeError {
     #[error("failed to initialize the private runtime directory")]
     RuntimeInitialization,
 
+    #[error("failed to seed bundled Mihomo data files")]
+    BundledData,
+
     #[error("failed to read the managed profile")]
     ProfileRead,
 
