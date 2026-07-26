@@ -181,7 +181,7 @@ tar \
 
 (
   cd "$dist_dir"
-  sha256sum mihoterm-v*-linux-*.tar.gz | sort -k2 >SHA256SUMS
+  sha256sum mihoterm-v"${crate_version}"-linux-*.tar.gz | sort -k2 >SHA256SUMS
 )
 
 printf '%s\n' "$archive"
