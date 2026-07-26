@@ -1,5 +1,6 @@
 use std::{
-    env,
+    env, fs,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
 
@@ -65,6 +66,24 @@ impl AppPaths {
     pub fn runtime_dir(&self) -> &Path {
         &self.runtime_dir
     }
+
+    pub fn prepare_private_state(&self) -> Result<(), PathError> {
+        if self.state_dir.exists() {
+            let metadata = fs::symlink_metadata(&self.state_dir)
+                .map_err(|_| PathError::StateInitialization)?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(PathError::StateInitialization);
+            }
+            if metadata.permissions().mode() & 0o077 != 0 {
+                return Err(PathError::InsecureStateDirectory);
+            }
+        } else {
+            fs::create_dir_all(&self.state_dir).map_err(|_| PathError::StateInitialization)?;
+            fs::set_permissions(&self.state_dir, fs::Permissions::from_mode(0o700))
+                .map_err(|_| PathError::StateInitialization)?;
+        }
+        Ok(())
+    }
 }
 
 fn absolute_path(path: &Path) -> Result<PathBuf, PathError> {
@@ -84,11 +103,22 @@ pub enum PathError {
 
     #[error("the current directory is unavailable")]
     CurrentDirectoryUnavailable,
+
+    #[error("failed to initialize the private state directory")]
+    StateInitialization,
+
+    #[error("the state directory must not be accessible by group or other users")]
+    InsecureStateDirectory,
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use super::AppPaths;
 
@@ -106,5 +136,59 @@ mod tests {
             Path::new("/tmp/mihoterm-test-state/profiles")
         );
         assert_eq!(paths.runtime_dir(), Path::new("/tmp/mihoterm-test-runtime"));
+    }
+
+    #[test]
+    fn state_directory_is_owner_only() {
+        let state = temporary_directory();
+        let paths = AppPaths::discover(None, Some(&state), None).expect("paths should resolve");
+
+        paths
+            .prepare_private_state()
+            .expect("state should be initialized");
+
+        assert_eq!(
+            fs::metadata(&state)
+                .expect("state should exist")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        fs::remove_dir_all(state).expect("state should be removed");
+    }
+
+    #[test]
+    fn existing_shared_state_directory_is_rejected_without_chmod() {
+        let state = temporary_directory();
+        fs::create_dir(&state).expect("state should be created");
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o755))
+            .expect("fixture permissions should be set");
+        let paths = AppPaths::discover(None, Some(&state), None).expect("paths should resolve");
+
+        assert_eq!(
+            paths.prepare_private_state(),
+            Err(super::PathError::InsecureStateDirectory)
+        );
+        assert_eq!(
+            fs::metadata(&state)
+                .expect("state should exist")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        fs::remove_dir_all(state).expect("state should be removed");
+    }
+
+    fn temporary_directory() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should follow the Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "mihoterm-state-test-{}-{nonce}",
+            std::process::id()
+        ))
     }
 }

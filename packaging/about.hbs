@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MihoTerm third-party licenses</title>
+  <style>
+    body { font-family: sans-serif; line-height: 1.45; margin: 2rem auto; max-width: 70rem; padding: 0 1rem; }
+    pre { border: 1px solid #ccc; max-height: 24rem; overflow: auto; padding: 1rem; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>MihoTerm third-party licenses</h1>
+    <p>This file covers Rust crates linked into the MihoTerm executable.</p>
+    <ul>
+      {{#each overview}}
+      <li><a href="#{{id}}">{{name}}</a> ({{count}})</li>
+      {{/each}}
+    </ul>
+    {{#each licenses}}
+      {{#if first_of_kind}}<h2 id="{{id}}">{{name}}</h2>{{/if}}
+      <h3>Used by</h3>
+      <ul>
+        {{#each used_by}}
+        <li><a href="{{#if crate.repository}}{{crate.repository}}{{else}}https://crates.io/crates/{{crate.name}}{{/if}}">{{crate.name}} {{crate.version}}</a></li>
+        {{/each}}
+      </ul>
+      <pre>{{text}}</pre>
+    {{/each}}
+  </main>
+</body>
+</html>

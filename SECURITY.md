@@ -35,3 +35,13 @@ The child receives a cleared environment, a private home directory, a random
 controller secret stored only in a mode `0600` runtime file, and `umask 077`.
 MihoTerm tracks and stops only the child it spawned. It never searches for or
 signals processes by name.
+
+## Portable release supply chain
+
+Portable archives use statically linked MihoTerm binaries and unmodified
+official Mihomo release assets. Every Mihomo asset and its license are pinned
+by SHA-256 in the repository and verified before packaging. Each archive
+records the exact upstream version, release, source commit, and checksum.
+
+MihoTerm does not silently replace the bundled core at runtime. Core updates
+are reviewed and shipped through a new MihoTerm release.

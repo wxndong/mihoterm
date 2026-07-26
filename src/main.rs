@@ -8,19 +8,32 @@ use mihoterm::{
     cli::{Cli, Command, ProfileCommand},
     config::{AppPaths, load_controller_secret, load_probe_targets},
     mihomo::ApiClient,
+    onboarding,
     profile::{ProfileSource, ProfileStore},
-    runtime::{ManagedRuntime, RuntimeError, exec_managed_child},
+    runtime::{ManagedRuntime, RuntimeError, default_mihomo_executable, exec_managed_child},
     tui,
 };
+use tokio::signal::unix::{SignalKind, signal};
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    match run(Cli::parse()).await {
+    match run_until_signal(Cli::parse()).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("mihoterm: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+async fn run_until_signal(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut terminate = signal(SignalKind::terminate())?;
+
+    tokio::select! {
+        result = run(cli) => result,
+        _ = interrupt.recv() => Ok(()),
+        _ = terminate.recv() => Ok(()),
     }
 }
 
@@ -56,6 +69,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         state_dir.as_deref(),
         runtime_dir.as_deref(),
     )?;
+    paths.prepare_private_state()?;
 
     let command = match command {
         Some(Command::Profile { command }) => {
@@ -64,8 +78,20 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::Run { profile, mihomo }) => {
             let probes = load_probe_targets(paths.config_file(), config_is_explicit)?;
             return run_managed(
-                &profile,
-                &mihomo,
+                profile.as_deref(),
+                mihomo.as_deref(),
+                &paths,
+                probes,
+                Duration::from_millis(timeout_ms),
+                Duration::from_millis(refresh_ms),
+            )
+            .await;
+        }
+        None => {
+            let probes = load_probe_targets(paths.config_file(), config_is_explicit)?;
+            return run_managed(
+                None,
+                None,
                 &paths,
                 probes,
                 Duration::from_millis(timeout_ms),
@@ -90,30 +116,35 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             );
             Ok(())
         }
-        None => {
+        Some(Command::Attach) => {
             let controller = client.controller_url().origin().ascii_serialization();
             let probes = load_probe_targets(paths.config_file(), config_is_explicit)?;
             let app = App::with_probes(controller, probes);
             tui::run(client, app, Duration::from_millis(refresh_ms)).await?;
             Ok(())
         }
-        Some(Command::Profile { .. } | Command::Run { .. } | Command::RuntimeChild { .. }) => {
+        None
+        | Some(Command::Profile { .. } | Command::Run { .. } | Command::RuntimeChild { .. }) => {
             unreachable!("non-attach commands return before API setup")
         }
     }
 }
 
 async fn run_managed(
-    profile: &str,
-    mihomo: &Path,
+    profile: Option<&str>,
+    mihomo: Option<&Path>,
     paths: &AppPaths,
     probes: Vec<mihoterm::probe::ProbeTarget>,
     request_timeout: Duration,
     refresh_interval: Duration,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = ProfileStore::new(paths.profiles_dir())?;
-    let profile_path = store.profile_path(profile)?;
-    let mut runtime = ManagedRuntime::start(mihomo, &profile_path, paths.runtime_dir()).await?;
+    let profile = onboarding::resolve_profile(&store, profile).await?;
+    let profile_path = store.profile_path(&profile)?;
+    let mihomo = mihomo
+        .map(Path::to_owned)
+        .unwrap_or_else(default_mihomo_executable);
+    let mut runtime = ManagedRuntime::start(&mihomo, &profile_path, paths.runtime_dir()).await?;
     let readiness_client = runtime.api_client(Duration::from_millis(500))?;
     runtime
         .wait_ready(&readiness_client, Duration::from_secs(15))

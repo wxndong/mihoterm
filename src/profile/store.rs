@@ -32,6 +32,7 @@ pub struct ProfileSummary {
 
 impl ProfileStore {
     pub fn new(root: PathBuf) -> Result<Self, ProfileError> {
+        crate::tls::install_default_provider();
         let client = Client::builder()
             .no_proxy()
             .connect_timeout(Duration::from_secs(10))
@@ -170,7 +171,15 @@ fn validate_id(id: &str) -> Result<(), ProfileError> {
 }
 
 fn ensure_private_directory(path: &Path) -> Result<(), ProfileError> {
-    fs::create_dir_all(path).map_err(|_| ProfileError::StorageInitialization)?;
+    if path.exists() {
+        let metadata =
+            fs::symlink_metadata(path).map_err(|_| ProfileError::StorageInitialization)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(ProfileError::StorageInitialization);
+        }
+    } else {
+        fs::create_dir_all(path).map_err(|_| ProfileError::StorageInitialization)?;
+    }
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))
         .map_err(|_| ProfileError::StorageInitialization)
 }

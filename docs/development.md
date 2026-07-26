@@ -15,6 +15,27 @@ Run the same entry point before every pull request:
 $ ./scripts/ci-local.sh
 ```
 
+Portable release builds additionally require Zig 0.16.0, cargo-zigbuild
+0.23.0, cargo-about 0.9.1, cargo-audit 0.22.2, and the relevant Rust musl
+target:
+
+```console
+$ cargo install cargo-zigbuild --version 0.23.0 --locked
+$ cargo install cargo-about --version 0.9.1 --locked --features cli
+$ cargo install cargo-audit --version 0.22.2 --locked
+$ rustup target add x86_64-unknown-linux-musl
+$ ./scripts/generate-licenses.sh
+$ ./scripts/build-portable.sh x86_64-unknown-linux-musl
+$ ./scripts/package-portable.sh x86_64-unknown-linux-musl
+$ ./scripts/ci-release-local.sh x86_64-unknown-linux-musl
+```
+
+The packaging script downloads only the pinned official Mihomo asset and
+license, verifies both SHA-256 values, and writes release files under `dist/`.
+These tools are developer requirements only; the resulting archive has no
+toolchain dependency. `ci-release-local.sh` also rejects stale Rust dependency
+license notices and non-reproducible archives.
+
 The script checks formatting, linting, tests, the release build, and Git
 whitespace. If `gitleaks` is installed, it also scans repository history.
 

@@ -6,10 +6,7 @@ use std::time::Duration;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
 use thiserror::Error;
-use tokio::{
-    signal::unix::{SignalKind, signal},
-    sync::mpsc,
-};
+use tokio::sync::mpsc;
 
 use crate::{
     app::{Action, App, Input, InputMode, Operation, OperationSuccess, Snapshot, fetch_snapshot},
@@ -34,8 +31,6 @@ pub async fn run(
 ) -> Result<(), TuiError> {
     let mut terminal = TerminalSession::enter()?;
     let mut events = EventStream::new();
-    let mut interrupt = signal(SignalKind::interrupt())?;
-    let mut terminate = signal(SignalKind::terminate())?;
     let (snapshot_sender, mut snapshot_receiver) = mpsc::channel(1);
     let (refresh_sender, refresh_receiver) = mpsc::channel(1);
     let refresh_worker = tokio::spawn(refresh_worker(
@@ -90,8 +85,6 @@ pub async fn run(
                         }
                     }
                 }
-                _ = interrupt.recv() => break,
-                _ = terminate.recv() => break,
             }
         }
 

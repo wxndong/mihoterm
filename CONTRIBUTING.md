@@ -11,6 +11,9 @@ Thank you for considering a contribution to MihoTerm.
 4. Run `./scripts/ci-local.sh`.
 5. Explain the user impact and validation evidence in the pull request.
 
+Release changes must also run `./scripts/ci-release-local.sh` for every
+architecture being published.
+
 ## Code style
 
 - Prefer responsibility-based module names over generic `utils`, `helpers`, or

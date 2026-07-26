@@ -6,6 +6,7 @@ use std::{
 
 use futures_util::StreamExt;
 use reqwest::Client;
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -43,7 +44,11 @@ impl ProfileSource {
         let bytes = fs::read(path).map_err(|_| ProfileError::SourceRead)?;
         let mut value = String::from_utf8(bytes).map_err(|_| ProfileError::UrlEncoding)?;
         value.truncate(value.trim_end_matches(['\r', '\n']).len());
-        let url = validate_subscription_url(&value)?;
+        Self::from_url(SecretString::from(value))
+    }
+
+    pub fn from_url(value: SecretString) -> Result<Self, ProfileError> {
+        let url = validate_subscription_url(value.expose_secret())?;
 
         Ok(Self {
             source: SourceKind::Https {
