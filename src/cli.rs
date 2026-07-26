@@ -19,6 +19,10 @@ pub struct Cli {
     #[arg(long, env = "MIHOTERM_STATE_DIR", value_name = "PATH")]
     pub state_dir: Option<PathBuf>,
 
+    /// Directory for isolated, transient managed-runtime files.
+    #[arg(long, env = "MIHOTERM_RUNTIME_DIR", value_name = "PATH")]
+    pub runtime_dir: Option<PathBuf>,
+
     /// Mihomo external-controller URL.
     #[arg(
         long,
@@ -68,6 +72,39 @@ pub enum Command {
     Profile {
         #[command(subcommand)]
         command: ProfileCommand,
+    },
+
+    /// Start one isolated Mihomo child from a managed profile and open the TUI.
+    Run {
+        /// Managed profile identifier.
+        profile: String,
+
+        /// Mihomo executable name or path.
+        #[arg(
+            long,
+            env = "MIHOTERM_MIHOMO",
+            default_value = "mihomo",
+            value_name = "PATH"
+        )]
+        mihomo: PathBuf,
+    },
+
+    #[command(name = "__runtime-child", hide = true)]
+    RuntimeChild {
+        #[arg(long, hide = true)]
+        parent_pid: u32,
+
+        #[arg(long, hide = true)]
+        binary: PathBuf,
+
+        #[arg(long, hide = true)]
+        home: PathBuf,
+
+        #[arg(long, hide = true)]
+        config: PathBuf,
+
+        #[arg(long, hide = true)]
+        test: bool,
     },
 }
 
@@ -191,5 +228,26 @@ mod tests {
 
         assert!(missing.is_err());
         assert!(conflicting.is_err());
+    }
+
+    #[test]
+    fn parses_an_explicit_managed_runtime() {
+        let cli = Cli::try_parse_from([
+            "mihoterm",
+            "--runtime-dir",
+            "/tmp/mihoterm-runtime",
+            "run",
+            "primary",
+            "--mihomo",
+            "/usr/local/bin/mihomo",
+        ])
+        .expect("managed runtime should parse");
+
+        assert!(matches!(
+            cli.command,
+            Some(Command::Run { profile, mihomo })
+                if profile == "primary"
+                    && mihomo.as_path() == std::path::Path::new("/usr/local/bin/mihomo")
+        ));
     }
 }

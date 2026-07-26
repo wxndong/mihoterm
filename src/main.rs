@@ -9,6 +9,7 @@ use mihoterm::{
     config::{AppPaths, load_controller_secret, load_probe_targets},
     mihomo::ApiClient,
     profile::{ProfileSource, ProfileStore},
+    runtime::{ManagedRuntime, RuntimeError, exec_managed_child},
     tui,
 };
 
@@ -27,18 +28,50 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let Cli {
         config,
         state_dir,
+        runtime_dir,
         controller,
         secret_file,
         timeout_ms,
         refresh_ms,
         command,
     } = cli;
+
+    let command = match command {
+        Some(Command::RuntimeChild {
+            parent_pid,
+            binary,
+            home,
+            config,
+            test,
+        }) => {
+            exec_managed_child(parent_pid, &binary, &home, &config, test)?;
+            unreachable!("a successful child exec does not return");
+        }
+        command => command,
+    };
+
     let config_is_explicit = config.is_some();
-    let paths = AppPaths::discover(config.as_deref(), state_dir.as_deref())?;
+    let paths = AppPaths::discover(
+        config.as_deref(),
+        state_dir.as_deref(),
+        runtime_dir.as_deref(),
+    )?;
 
     let command = match command {
         Some(Command::Profile { command }) => {
             return run_profile(command, paths.profiles_dir()).await;
+        }
+        Some(Command::Run { profile, mihomo }) => {
+            let probes = load_probe_targets(paths.config_file(), config_is_explicit)?;
+            return run_managed(
+                &profile,
+                &mihomo,
+                &paths,
+                probes,
+                Duration::from_millis(timeout_ms),
+                Duration::from_millis(refresh_ms),
+            )
+            .await;
         }
         command => command,
     };
@@ -64,7 +97,56 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             tui::run(client, app, Duration::from_millis(refresh_ms)).await?;
             Ok(())
         }
-        Some(Command::Profile { .. }) => unreachable!("profile commands return before API setup"),
+        Some(Command::Profile { .. } | Command::Run { .. } | Command::RuntimeChild { .. }) => {
+            unreachable!("non-attach commands return before API setup")
+        }
+    }
+}
+
+async fn run_managed(
+    profile: &str,
+    mihomo: &Path,
+    paths: &AppPaths,
+    probes: Vec<mihoterm::probe::ProbeTarget>,
+    request_timeout: Duration,
+    refresh_interval: Duration,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = ProfileStore::new(paths.profiles_dir())?;
+    let profile_path = store.profile_path(profile)?;
+    let mut runtime = ManagedRuntime::start(mihomo, &profile_path, paths.runtime_dir()).await?;
+    let readiness_client = runtime.api_client(Duration::from_millis(500))?;
+    runtime
+        .wait_ready(&readiness_client, Duration::from_secs(15))
+        .await?;
+
+    let client = runtime.api_client(request_timeout)?;
+    let display = format!("managed  mixed 127.0.0.1:{}", runtime.mixed_port());
+    let app = App::with_probes(display, probes);
+
+    enum Outcome {
+        Tui(Result<(), tui::TuiError>),
+        Child(Result<std::process::ExitStatus, RuntimeError>),
+    }
+
+    let outcome = tokio::select! {
+        result = tui::run(client, app, refresh_interval) => Outcome::Tui(result),
+        status = runtime.wait() => Outcome::Child(status),
+    };
+
+    match outcome {
+        Outcome::Tui(result) => {
+            let stop = runtime.stop();
+            result?;
+            stop?;
+            Ok(())
+        }
+        Outcome::Child(status) => {
+            let status = status?;
+            Err(RuntimeError::UnexpectedExit {
+                code: status.code(),
+            }
+            .into())
+        }
     }
 }
 

@@ -29,12 +29,12 @@ or a Mihomo executable.
 - Import Mihomo YAML from a protected subscription URL file or local file.
 - Validate, atomically update, and roll back named profiles without touching a
   running Mihomo instance.
+- Start one explicitly requested Mihomo child with private runtime files,
+  random loopback ports, a random controller secret, and automatic cleanup.
 
 ## Planned capabilities
 
 - Inspect live traffic, providers, and connections.
-- Start an explicitly requested, isolated Mihomo child process from a managed
-  profile.
 - Ship static binaries for x86_64, aarch64, and armv7 Linux.
 
 ## Non-goals
@@ -129,6 +129,23 @@ A local Mihomo YAML file can be imported with
 manage private local files; they never reload or modify an attached Mihomo
 instance. See [Profile management](docs/profiles.md) for the complete storage
 and failure contract.
+
+To start an isolated Mihomo child from a managed profile:
+
+```console
+$ mihoterm run primary
+```
+
+MihoTerm validates a derived configuration, disables system-changing and
+additional inbound features, allocates fresh loopback controller and mixed
+proxy ports, and shows the mixed port in the TUI header. `q`, `Ctrl-C`, and
+normal termination stop only that exact child. Use `--mihomo /path/to/mihomo`
+when the executable is not on `PATH`.
+
+Managed mode never edits the stored profile and never adopts, reloads, or
+stops an existing Mihomo process. See
+[Managed runtime](docs/managed-runtime.md) for its complete safety boundary
+and current limitations.
 
 ## Security and privacy
 
