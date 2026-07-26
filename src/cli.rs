@@ -65,6 +65,9 @@ pub struct Cli {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
+    /// Attach the TUI to an existing Mihomo external controller.
+    Attach,
+
     /// Print a sanitized one-line controller status without opening the TUI.
     Status,
 
@@ -76,17 +79,12 @@ pub enum Command {
 
     /// Start one isolated Mihomo child from a managed profile and open the TUI.
     Run {
-        /// Managed profile identifier.
-        profile: String,
+        /// Managed profile identifier; auto-select or guide setup when omitted.
+        profile: Option<String>,
 
         /// Mihomo executable name or path.
-        #[arg(
-            long,
-            env = "MIHOTERM_MIHOMO",
-            default_value = "mihomo",
-            value_name = "PATH"
-        )]
-        mihomo: PathBuf,
+        #[arg(long, env = "MIHOTERM_MIHOMO", value_name = "PATH")]
+        mihomo: Option<PathBuf>,
     },
 
     #[command(name = "__runtime-child", hide = true)]
@@ -158,11 +156,18 @@ mod tests {
     use super::{Cli, Command, DEFAULT_CONTROLLER, ProfileCommand};
 
     #[test]
-    fn defaults_to_the_local_controller_and_tui() {
+    fn no_subcommand_selects_guided_managed_mode() {
         let cli = Cli::try_parse_from(["mihoterm"]).expect("defaults should parse");
 
         assert_eq!(cli.controller, DEFAULT_CONTROLLER);
         assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn parses_explicit_attach_mode() {
+        let cli = Cli::try_parse_from(["mihoterm", "attach"]).expect("attach should parse");
+
+        assert!(matches!(cli.command, Some(Command::Attach)));
     }
 
     #[test]
@@ -245,9 +250,22 @@ mod tests {
 
         assert!(matches!(
             cli.command,
-            Some(Command::Run { profile, mihomo })
+            Some(Command::Run { profile: Some(profile), mihomo: Some(mihomo) })
                 if profile == "primary"
                     && mihomo.as_path() == std::path::Path::new("/usr/local/bin/mihomo")
+        ));
+    }
+
+    #[test]
+    fn managed_runtime_can_guide_first_run() {
+        let cli = Cli::try_parse_from(["mihoterm", "run"]).expect("guided run should parse");
+
+        assert!(matches!(
+            cli.command,
+            Some(Command::Run {
+                profile: None,
+                mihomo: None
+            })
         ));
     }
 }

@@ -34,3 +34,10 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   listeners, tunnels, inbound servers, external UI, and non-loopback control.
 - A minimal child wrapper that clears inherited environment overrides, applies
   `umask 077`, and requests automatic termination if MihoTerm disappears.
+- Guided first-run setup with a hidden subscription URL prompt and deterministic
+  profile selection.
+- Explicit attach mode; the no-argument command now starts an isolated managed
+  instance instead of implicitly connecting to another process.
+- Static portable bundle tooling with a checksum-pinned official Mihomo core,
+  license separation, and reproducible archive metadata.
+- Ring-based rustls cryptography to reduce the static MihoTerm binary size.

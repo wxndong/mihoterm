@@ -3,12 +3,13 @@
 A tiny, fast, keyboard-first TUI for [Mihomo](https://github.com/MetaCubeX/mihomo)
 on Linux.
 
-> **Status:** pre-alpha. Attach and safe-control modes are under active
-> development and are not ready for daily use yet.
+> **Status:** alpha candidate. Managed mode, attach mode, and portable
+> packaging are under active validation and are not ready for daily use yet.
 
 MihoTerm is an independent client for the Mihomo external-controller API. It
-does not provide or bundle proxy services, subscription content, credentials,
-or a Mihomo executable.
+does not provide proxy services, subscription content, or credentials.
+Portable release archives include an unmodified, checksum-pinned official
+Mihomo executable so users do not need to install a separate runtime.
 
 ## Goals
 
@@ -31,11 +32,15 @@ or a Mihomo executable.
   running Mihomo instance.
 - Start one explicitly requested Mihomo child with private runtime files,
   random loopback ports, a random controller secret, and automatic cleanup.
+- Guide first-run setup through a hidden terminal prompt and automatically find
+  the Mihomo executable shipped beside MihoTerm.
+- Build self-contained Linux release archives with no dynamic-library, Rust,
+  Cargo, root, or systemd requirement.
 
 ## Planned capabilities
 
 - Inspect live traffic, providers, and connections.
-- Ship static binaries for x86_64, aarch64, and armv7 Linux.
+- Validate portable archives on aarch64 and armv7 Linux.
 
 ## Non-goals
 
@@ -52,9 +57,28 @@ or a Mihomo executable.
   source.
 - **Provider, policy group, and proxy:** terms used by the Mihomo API.
 
+## Installation
+
+End users should download a portable archive from
+[GitHub Releases](https://github.com/wxndong/mihoterm/releases), not clone the
+source repository. Choose the archive for the machine's CPU, verify it against
+`SHA256SUMS`, extract it, and run:
+
+```console
+$ ./mihoterm
+```
+
+The archive is self-contained. On first run, MihoTerm asks for an HTTPS
+subscription URL using a hidden terminal prompt, validates the downloaded
+profile, starts the bundled Mihomo core on dynamic loopback ports, and opens
+the TUI. No root access or system service is used.
+
+See [Installation](docs/installation.md) for architecture selection, optional
+user-local installation, and the bundle's third-party license boundary.
+
 ## Development
 
-Rust 1.88 or newer is required.
+The source tree is for contributors. Rust 1.88 or newer is required.
 
 ```console
 $ ./scripts/ci-local.sh
@@ -67,18 +91,21 @@ authentication, and error-handling behavior.
 
 ## Current command line
 
-MihoTerm attaches to `http://127.0.0.1:9090` by default:
+MihoTerm starts guided managed mode by default:
 
 ```console
-$ cargo run
+$ mihoterm
+$ mihoterm run
+$ mihoterm run primary
 ```
 
-Use an explicit controller or a permission-restricted secret file when needed:
+Attaching to an existing Mihomo instance is always explicit:
 
 ```console
-$ cargo run -- --controller http://127.0.0.1:19090 \
+$ mihoterm --controller http://127.0.0.1:19090 \
     --secret-file ~/.config/mihoterm/controller.secret
-$ cargo run -- status
+$ mihoterm attach
+$ mihoterm status
 ```
 
 The TUI is keyboard-first:
@@ -130,7 +157,7 @@ manage private local files; they never reload or modify an attached Mihomo
 instance. See [Profile management](docs/profiles.md) for the complete storage
 and failure contract.
 
-To start an isolated Mihomo child from a managed profile:
+To start an isolated Mihomo child from a specific managed profile:
 
 ```console
 $ mihoterm run primary
@@ -142,8 +169,9 @@ proxy ports, and shows the mixed port in the TUI header. `q`, `Ctrl-C`, and
 normal termination stop only that exact child. Use `--mihomo /path/to/mihomo`
 when the executable is not on `PATH`.
 
-Managed mode never edits the stored profile and never adopts, reloads, or
-stops an existing Mihomo process. See
+With no profile argument, managed mode selects `default`, selects the only
+available profile, or opens first-run setup. It never edits the stored profile
+and never adopts, reloads, or stops an existing Mihomo process. See
 [Managed runtime](docs/managed-runtime.md) for its complete safety boundary
 and current limitations.
 
@@ -166,4 +194,6 @@ network policies, and service terms.
 
 ## License
 
-[MIT](LICENSE)
+MihoTerm is [MIT](LICENSE)-licensed. Portable archives also contain the
+separate GPL-3.0-licensed Mihomo executable; see
+[Third-party notices](THIRD_PARTY_NOTICES.md).

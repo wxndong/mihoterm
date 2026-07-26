@@ -32,6 +32,7 @@ impl ApiClient {
         secret: Option<String>,
         timeout: Duration,
     ) -> Result<Self, ApiError> {
+        crate::tls::install_default_provider();
         let base_url = normalize_controller_url(controller_url)?;
         let connect_timeout = timeout.min(DEFAULT_TIMEOUT);
         let http = reqwest::Client::builder()

@@ -15,7 +15,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
-          toolchain: stable
+          toolchain: 1.88.0
           components: clippy,rustfmt
       - name: Run local-equivalent checks
         run: ./scripts/ci-local.sh

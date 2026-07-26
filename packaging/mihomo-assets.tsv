@@ -1,0 +1,6 @@
+# version	v1.19.29
+# source-commit	e26714a181ac0e2fa803453c0a8e9a9ce94e31cb
+# license-url	https://raw.githubusercontent.com/MetaCubeX/mihomo/v1.19.29/LICENSE	3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986
+x86_64-unknown-linux-musl	mihomo-linux-amd64-compatible-v1.19.29.gz	5612e698e96c8b8ad15abc4c0a4f098eba9234354b4f248cb97f2528e215b094
+aarch64-unknown-linux-musl	mihomo-linux-arm64-v1.19.29.gz	9a868b5e4e0ad91d9d71e1b41b0cfce78aaba44360c30df74a723f8e3926a86c
+armv7-unknown-linux-musleabihf	mihomo-linux-armv7-v1.19.29.gz	9e2b975a5513c9fc0012f6600552329e311282455f90474b7220d21deb049ecd

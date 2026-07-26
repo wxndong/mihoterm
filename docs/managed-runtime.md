@@ -1,15 +1,23 @@
 # Managed Runtime
 
-Managed mode is an explicit convenience for running one Mihomo child alongside
-the TUI:
+Managed mode runs one Mihomo child alongside the TUI. It is the default
+end-user mode, while attaching to an existing controller is explicit:
 
 ```console
+$ mihoterm
+$ mihoterm run
 $ mihoterm run primary
 $ mihoterm run primary --mihomo /opt/mihomo/bin/mihomo
+$ mihoterm attach
 ```
 
-It is separate from attach mode. MihoTerm never adopts an existing process,
-matches processes by name, modifies a service, or changes the stored profile.
+With no profile argument, MihoTerm selects `default`, selects the only existing
+profile, or starts guided first-run setup. With no `--mihomo` override, it uses
+an executable named `mihomo` beside itself before searching `PATH`.
+
+Managed mode is separate from attach mode. MihoTerm never adopts an existing
+process, matches processes by name, modifies a service, or changes the stored
+profile.
 
 ## Startup sequence
 

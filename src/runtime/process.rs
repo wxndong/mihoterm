@@ -231,6 +231,21 @@ impl ManagedRuntime {
     }
 }
 
+#[must_use]
+pub fn default_mihomo_executable() -> PathBuf {
+    env::current_exe()
+        .ok()
+        .and_then(|current| bundled_mihomo_for(&current))
+        .unwrap_or_else(|| PathBuf::from("mihomo"))
+}
+
+fn bundled_mihomo_for(current_executable: &Path) -> Option<PathBuf> {
+    current_executable
+        .parent()
+        .map(|parent| parent.join("mihomo"))
+        .filter(|candidate| is_executable(candidate))
+}
+
 impl Drop for ManagedRuntime {
     fn drop(&mut self) {
         if self.stop_child(false).is_ok() {
@@ -559,8 +574,8 @@ mod tests {
     use secrecy::SecretString;
 
     use super::{
-        ManagedRuntime, PortReservations, prepare_runtime_root, read_private_profile,
-        resolve_executable,
+        ManagedRuntime, PortReservations, bundled_mihomo_for, prepare_runtime_root,
+        read_private_profile, resolve_executable,
     };
 
     #[test]
@@ -580,6 +595,20 @@ mod tests {
             .expect("permissions should be set");
 
         assert!(resolve_executable(&path).is_err());
+        fs::remove_dir_all(base).expect("directory should be removed");
+    }
+
+    #[test]
+    fn portable_bundle_prefers_an_executable_sibling() {
+        let base = temporary_directory();
+        let launcher = base.join("mihoterm");
+        let core = base.join("mihomo");
+        fs::create_dir(&base).expect("directory should be created");
+        fs::write(&core, "").expect("core fixture should be written");
+        fs::set_permissions(&core, fs::Permissions::from_mode(0o700))
+            .expect("permissions should be set");
+
+        assert_eq!(bundled_mihomo_for(&launcher), Some(core));
         fs::remove_dir_all(base).expect("directory should be removed");
     }
 

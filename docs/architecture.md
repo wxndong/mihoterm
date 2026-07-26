@@ -27,11 +27,13 @@ requests a supported API operation.
 
 ### Managed mode
 
-Managed mode starts an explicitly selected Mihomo executable with a dedicated
-runtime directory, dynamically allocated loopback ports, and a generated
-controller secret. MihoTerm records and signals only the exact child process it
-started. A small internal wrapper applies a parent-death signal and then
-replaces itself with Mihomo, preserving the tracked PID.
+Managed mode is the no-argument default. First-run onboarding creates a
+protected profile, then starts an explicitly selected or bundle-adjacent
+Mihomo executable with a dedicated runtime directory, dynamically allocated
+loopback ports, and a generated controller secret. MihoTerm records and
+signals only the exact child process it started. A small internal wrapper
+applies a parent-death signal and then replaces itself with Mihomo, preserving
+the tracked PID.
 
 ## Safety invariants
 
@@ -58,3 +60,5 @@ replaces itself with Mihomo, preserving the tracked PID.
   update, and rollback.
 - `runtime`: isolated child-process lifecycle.
 - `config`: XDG paths and user preferences.
+- `onboarding`: deterministic profile selection and hidden first-run input.
+- `tls`: one process-wide Ring provider for rustls clients.
