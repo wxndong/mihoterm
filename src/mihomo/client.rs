@@ -35,6 +35,7 @@ impl ApiClient {
         let base_url = normalize_controller_url(controller_url)?;
         let connect_timeout = timeout.min(DEFAULT_TIMEOUT);
         let http = reqwest::Client::builder()
+            .no_proxy()
             .connect_timeout(connect_timeout)
             .timeout(timeout)
             .user_agent(concat!("mihoterm/", env!("CARGO_PKG_VERSION")))

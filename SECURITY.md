@@ -22,3 +22,16 @@ Controller secrets and subscription sources are credentials. MihoTerm must:
   telemetry;
 - avoid passing them through command-line arguments when a file or environment
   variable is available.
+
+## Managed runtime
+
+Managed mode is opt-in. It derives a separate runtime configuration and does
+not execute the stored profile verbatim. Controller and mixed proxy listeners
+bind only to loopback on dynamically reserved ports. TUN, iptables, custom
+listeners, tunnels, server inbounds, external UI, and unauthenticated alternate
+controller transports are disabled.
+
+The child receives a cleared environment, a private home directory, a random
+controller secret stored only in a mode `0600` runtime file, and `umask 077`.
+MihoTerm tracks and stops only the child it spawned. It never searches for or
+signals processes by name.

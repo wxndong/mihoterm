@@ -10,12 +10,14 @@ use thiserror::Error;
 pub struct AppPaths {
     config_file: PathBuf,
     state_dir: PathBuf,
+    runtime_dir: PathBuf,
 }
 
 impl AppPaths {
     pub fn discover(
         config_file: Option<&Path>,
         state_dir: Option<&Path>,
+        runtime_dir: Option<&Path>,
     ) -> Result<Self, PathError> {
         let project =
             ProjectDirs::from("", "", "mihoterm").ok_or(PathError::HomeDirectoryUnavailable)?;
@@ -30,10 +32,17 @@ impl AppPaths {
                 .unwrap_or_else(|| project.data_local_dir())
                 .to_owned(),
         };
+        let runtime_dir = match runtime_dir {
+            Some(path) => absolute_path(path)?,
+            None => project
+                .runtime_dir()
+                .map_or_else(|| state_dir.join("runtime"), Path::to_owned),
+        };
 
         Ok(Self {
             config_file,
             state_dir,
+            runtime_dir,
         })
     }
 
@@ -50,6 +59,11 @@ impl AppPaths {
     #[must_use]
     pub fn profiles_dir(&self) -> PathBuf {
         self.state_dir.join("profiles")
+    }
+
+    #[must_use]
+    pub fn runtime_dir(&self) -> &Path {
+        &self.runtime_dir
     }
 }
 
@@ -83,6 +97,7 @@ mod tests {
         let paths = AppPaths::discover(
             Some(Path::new("/tmp/mihoterm-test-config.toml")),
             Some(Path::new("/tmp/mihoterm-test-state")),
+            Some(Path::new("/tmp/mihoterm-test-runtime")),
         )
         .expect("explicit paths should resolve");
 
@@ -90,5 +105,6 @@ mod tests {
             paths.profiles_dir(),
             Path::new("/tmp/mihoterm-test-state/profiles")
         );
+        assert_eq!(paths.runtime_dir(), Path::new("/tmp/mihoterm-test-runtime"));
     }
 }

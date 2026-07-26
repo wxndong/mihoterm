@@ -28,3 +28,9 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Bounded downloads, structural YAML validation, private storage, serialized
   mutations, atomic updates, and one-step rollback for managed profiles.
 - Profile management commands that never alter a running Mihomo instance.
+- An opt-in managed runtime with preflight validation, dynamically reserved
+  loopback ports, a random API secret, private files, and exact child cleanup.
+- A hardened derived configuration that disables TUN, iptables, extra
+  listeners, tunnels, inbound servers, external UI, and non-loopback control.
+- A minimal child wrapper that clears inherited environment overrides, applies
+  `umask 077`, and requests automatic termination if MihoTerm disappears.

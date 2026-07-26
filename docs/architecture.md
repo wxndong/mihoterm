@@ -30,7 +30,8 @@ requests a supported API operation.
 Managed mode starts an explicitly selected Mihomo executable with a dedicated
 runtime directory, dynamically allocated loopback ports, and a generated
 controller secret. MihoTerm records and signals only the exact child process it
-started.
+started. A small internal wrapper applies a parent-death signal and then
+replaces itself with Mihomo, preserving the tracked PID.
 
 ## Safety invariants
 
@@ -43,6 +44,10 @@ started.
 7. Unsupported Mihomo API capabilities degrade visibly and safely.
 8. Profile sources and probe URLs are never accepted as command-line values.
 9. Concurrent profile mutations are rejected through an advisory file lock.
+10. Managed mode never executes inherited `CLASH_*` overrides or lifecycle
+    scripts.
+11. Stored profiles are immutable inputs; managed mode runs a separate,
+    hardened derivative.
 
 ## Module boundaries
 
