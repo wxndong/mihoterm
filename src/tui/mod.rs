@@ -9,8 +9,12 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 
 use crate::{
-    app::{Action, App, Input, InputMode, Operation, OperationSuccess, Snapshot, fetch_snapshot},
+    app::{
+        Action, App, Input, InputMode, Operation, OperationSuccess, ProfileOperation,
+        ProfileOperationSuccess, Snapshot, fetch_snapshot,
+    },
     mihomo::{ApiClient, ApiError},
+    profile::{ProfileError, ProfileStore},
 };
 
 use terminal::TerminalSession;
@@ -28,6 +32,7 @@ pub async fn run(
     client: ApiClient,
     mut app: App,
     refresh_interval: Duration,
+    profile_store: Option<ProfileStore>,
 ) -> Result<(), TuiError> {
     let mut terminal = TerminalSession::enter()?;
     let mut events = EventStream::new();
@@ -43,6 +48,15 @@ pub async fn run(
     let (result_sender, mut result_receiver) = mpsc::channel(1);
     let operation_worker =
         tokio::spawn(operation_worker(client, operation_receiver, result_sender));
+    let (profile_sender, profile_receiver) = mpsc::channel(1);
+    let (profile_result_sender, mut profile_result_receiver) = mpsc::channel(1);
+    let profile_worker = profile_store.map(|store| {
+        tokio::spawn(profile_worker(
+            store,
+            profile_receiver,
+            profile_result_sender,
+        ))
+    });
 
     let result = async {
         loop {
@@ -62,15 +76,27 @@ pub async fn run(
                     app.apply_operation_result(operation);
                     let _ = refresh_sender.try_send(());
                 }
+                profile_result = profile_result_receiver.recv(), if profile_worker.is_some() => {
+                    let Some(profile_result) = profile_result else {
+                        return Err(TuiError::InputEnded);
+                    };
+                    app.apply_profile_operation_result(profile_result);
+                }
                 event = events.next() => {
                     let Some(event) = event else {
                         return Err(TuiError::InputEnded);
                     };
                     let event = event?;
-                    if let Event::Key(key) = event
-                        && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
-                        && let Some(input) = map_key(key, app.input_mode)
-                    {
+                    let input = match event {
+                        Event::Key(key)
+                            if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
+                        {
+                            map_key(key, app.input_mode)
+                        }
+                        Event::Paste(value) => Some(Input::Paste(value)),
+                        _ => None,
+                    };
+                    if let Some(input) = input {
                         match app.handle_input(input) {
                             Action::None => {}
                             Action::Quit => break,
@@ -79,6 +105,11 @@ pub async fn run(
                             }
                             Action::Execute(operation) => {
                                 if operation_sender.try_send(operation).is_err() {
+                                    app.reject_operation();
+                                }
+                            }
+                            Action::ManageProfile(operation) => {
+                                if profile_sender.try_send(operation).is_err() {
                                     app.reject_operation();
                                 }
                             }
@@ -94,6 +125,9 @@ pub async fn run(
 
     refresh_worker.abort();
     operation_worker.abort();
+    if let Some(worker) = profile_worker {
+        worker.abort();
+    }
     result
 }
 
@@ -153,10 +187,54 @@ async fn operation_worker(
     }
 }
 
+async fn profile_worker(
+    store: ProfileStore,
+    mut operation_receiver: mpsc::Receiver<ProfileOperation>,
+    result_sender: mpsc::Sender<Result<ProfileOperationSuccess, ProfileError>>,
+) {
+    while let Some(operation) = operation_receiver.recv().await {
+        let result = match operation {
+            ProfileOperation::Add { id, source } => match store.add(&id, source).await {
+                Ok(()) => store
+                    .list()
+                    .map(|profiles| ProfileOperationSuccess::Added { id, profiles }),
+                Err(error) => Err(error),
+            },
+            ProfileOperation::ReplaceSource { id, source } => {
+                match store.replace_source(&id, source).await {
+                    Ok(()) => store
+                        .list()
+                        .map(|profiles| ProfileOperationSuccess::SourceReplaced { id, profiles }),
+                    Err(error) => Err(error),
+                }
+            }
+            ProfileOperation::Update { id } => match store.update(&id).await {
+                Ok(()) => store
+                    .list()
+                    .map(|profiles| ProfileOperationSuccess::Updated { id, profiles }),
+                Err(error) => Err(error),
+            },
+        };
+
+        if result_sender.send(result).await.is_err() {
+            return;
+        }
+    }
+}
+
 fn map_key(key: KeyEvent, input_mode: InputMode) -> Option<Input> {
     if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'C'))
     {
         return Some(Input::Quit);
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('u' | 'U'))
+        && matches!(
+            input_mode,
+            InputMode::Search | InputMode::ProfileId | InputMode::SubscriptionUrl
+        )
+    {
+        return Some(Input::Clear);
     }
     if key
         .modifiers
@@ -197,6 +275,10 @@ mod tests {
         assert_eq!(map_key(key, InputMode::Search), Some(Input::Character('q')));
         assert_eq!(
             map_key(key, InputMode::Confirm),
+            Some(Input::Character('q'))
+        );
+        assert_eq!(
+            map_key(key, InputMode::SubscriptionUrl),
             Some(Input::Character('q'))
         );
     }

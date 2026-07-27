@@ -3,8 +3,8 @@
 A tiny, fast, keyboard-first TUI for [Mihomo](https://github.com/MetaCubeX/mihomo)
 on Linux.
 
-> **Status:** alpha candidate. Managed mode, attach mode, and portable
-> packaging are under active validation and are not ready for daily use yet.
+> **Status:** v0.1.0-alpha.2 candidate. Managed mode, user-local installation,
+> and portable packaging are under active validation.
 
 MihoTerm is an independent client for the Mihomo external-controller API. It
 does not provide proxy services, subscription content, or credentials.
@@ -30,10 +30,16 @@ network.
 - Probe Google, OpenAI, or GitHub without changing the active proxy.
 - Load additional HTTPS probe targets from a protected TOML configuration.
 - Import Mihomo YAML from a protected subscription URL file or local file.
-- Validate, atomically update, and roll back named profiles without touching a
-  running Mihomo instance.
-- Start one explicitly requested Mihomo child with private runtime files,
-  random loopback ports, a random controller secret, and automatic cleanup.
+- Add, inspect in redacted form, replace, validate, update, and roll back named
+  subscription profiles from the TUI or CLI.
+- Keep one authenticated, user-owned Mihomo process running independently of
+  the TUI, with private runtime files, random loopback ports, and exact-PID
+  lifecycle control.
+- Export standard HTTP, HTTPS, and SOCKS proxy variables, open a proxied shell,
+  or run one proxied command without exposing generated credentials.
+- Install into the user's home for invocation from any directory, add
+  reversible Bash integration, and uninstall while preserving profiles by
+  default.
 - Guide first-run setup through a hidden terminal prompt and automatically find
   the Mihomo executable shipped beside MihoTerm.
 - Build self-contained Linux release archives with no dynamic-library, Rust,
@@ -48,8 +54,8 @@ network.
 
 - Reimplementing proxy protocols, DNS, routing, or the Mihomo core.
 - Providing, selling, recommending, or embedding subscription services.
-- Modifying system-wide proxy settings or requiring root privileges by
-  default.
+- Transparently intercepting every process, modifying system-wide proxy
+  settings, or requiring root privileges by default.
 - Depending on systemd for the basic application lifecycle.
 
 ## Terminology
@@ -64,19 +70,27 @@ network.
 End users should download a portable archive from
 [GitHub Releases](https://github.com/wxndong/mihoterm/releases), not clone the
 source repository. Choose the archive for the machine's CPU, verify it against
-`SHA256SUMS`, extract it, and run:
+`SHA256SUMS`, extract it, and install it for the current user:
 
 ```console
-$ ./mihoterm
+$ ./install.sh
+$ exec "$SHELL" -l
+$ mihoterm
 ```
 
-The archive is self-contained. On first run, MihoTerm asks for an HTTPS
-subscription URL using a hidden terminal prompt, validates the downloaded
-profile, starts the bundled Mihomo core on dynamic loopback ports, and opens
-the TUI. No root access or system service is used.
+The archive is self-contained, so no compiler or runtime environment is
+needed. On first run, MihoTerm asks for an HTTPS subscription URL using a
+hidden terminal prompt, validates the downloaded profile, starts the bundled
+Mihomo core on authenticated dynamic loopback ports, and opens the TUI. `q`
+closes the TUI while the proxy remains available to the shell. No root access
+or system service is used.
 
-See [Installation](docs/installation.md) for architecture selection, optional
-user-local installation, and the bundle's third-party license boundary.
+Running `./mihoterm` directly from the extracted directory remains supported
+as a no-install portable mode.
+
+See [Installation](docs/installation.md) for architecture selection,
+user-local installation, shell behavior, uninstall, and the bundle's
+third-party license boundary.
 
 ## Development
 
@@ -101,6 +115,25 @@ $ mihoterm run
 $ mihoterm run primary
 ```
 
+The background lifecycle and explicit integration commands are:
+
+```console
+$ mihoterm start
+$ mihoterm status
+$ eval "$(mihoterm env)"
+$ mihoterm exec -- curl https://example.com
+$ mihoterm shell
+$ mihoterm stop
+$ mihoterm uninstall
+$ mihoterm uninstall --purge
+```
+
+The installer-managed Bash function automatically synchronizes the proxy
+environment after `mihoterm`, `run`, `start`, and `stop`. It saves and restores
+pre-existing proxy variables instead of permanently replacing them. Programs
+that honor the standard proxy variables then use MihoTerm. Transparent
+system-wide traffic capture is deliberately outside the default rootless mode.
+
 Attaching to an existing Mihomo instance is always explicit:
 
 ```console
@@ -120,7 +153,10 @@ The TUI is keyboard-first:
 - `p` cycles through Google, OpenAI, and GitHub probe targets.
 - `/` searches the focused list.
 - `r` requests a background refresh.
-- `q` or `Ctrl-C` exits.
+- `s` opens subscription profile management.
+- In the profile page, `a` adds a source, `e` replaces its URL, and `u`
+  downloads and validates an update.
+- `q` or `Ctrl-C` closes the TUI without stopping the background proxy.
 
 See [Probe semantics](docs/probes.md) before interpreting delay results.
 
@@ -139,8 +175,14 @@ expected = "204"
 timeout_ms = 3000
 ```
 
-Subscription URLs are accepted only through an owner-only file, keeping them
-out of shell history and process listings:
+Press `s` in managed TUI mode for the simplest workflow. URL input is hidden,
+and the source list shows only a redacted origin such as
+`https://example.com/…`; paths and query credentials are never rendered.
+Changes to the active profile are stored safely and take effect after the
+managed proxy is restarted.
+
+The equivalent CLI accepts subscription URLs only through an owner-only file,
+keeping them out of shell history and process listings:
 
 ```console
 $ install -d -m 700 ~/.config/mihoterm
@@ -159,7 +201,7 @@ manage private local files; they never reload or modify an attached Mihomo
 instance. See [Profile management](docs/profiles.md) for the complete storage
 and failure contract.
 
-To start an isolated Mihomo child from a specific managed profile:
+To start or reuse the background proxy with a specific managed profile:
 
 ```console
 $ mihoterm run primary
@@ -167,9 +209,10 @@ $ mihoterm run primary
 
 MihoTerm validates a derived configuration, disables system-changing and
 additional inbound features, allocates fresh loopback controller and mixed
-proxy ports, and shows the mixed port in the TUI header. `q`, `Ctrl-C`, and
-normal termination stop only that exact child. Use `--mihomo /path/to/mihomo`
-when the executable is not on `PATH`.
+proxy ports, enables generated mixed-port authentication, and shows the port
+in the TUI header. `q` leaves the proxy running; `mihoterm stop` stops only the
+exact recorded process. Use `--mihomo /path/to/mihomo` when the executable is
+not on `PATH`.
 
 With no profile argument, managed mode selects `default`, selects the only
 available profile, or opens first-run setup. It never edits the stored profile

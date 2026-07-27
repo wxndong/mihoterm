@@ -43,8 +43,9 @@ where the platform exposes them. Cargo, Rayon, and test workers share that
 budget. Set `MIHOTERM_BUILD_JOBS` explicitly only when a different limit is
 appropriate.
 
-The script checks formatting, linting, tests, the release build, and Git
-whitespace. If `gitleaks` is installed, it also scans repository history.
+The script checks formatting, linting, tests, documentation, the release build,
+an isolated install/idempotency/uninstall lifecycle, and Git whitespace. If
+`gitleaks` is installed, it also scans repository history.
 
 Live integration tests must:
 
@@ -54,10 +55,12 @@ Live integration tests must:
 - start and stop only their exact child process;
 - remain opt-in and skip cleanly when Mihomo is unavailable.
 
-The managed-runtime smoke profile must contain only fixture data. Verify the
-mixed proxy through its displayed dynamic port, then confirm that the child,
-both listeners, and the per-run directory disappear after `q`. Also confirm
-that any pre-existing Mihomo PID is unchanged.
+The managed-runtime smoke profile must contain only authorized test data.
+Verify that unauthenticated mixed-port requests receive `407`, authenticated
+HTTP and SOCKS requests succeed, and `q` leaves the exact tracked process
+available. Then run `mihoterm stop` and confirm that the child, both listeners,
+the descriptor, and the per-run directory disappear. Also confirm that any
+pre-existing Mihomo PID is unchanged.
 
 ## Configuration locations
 

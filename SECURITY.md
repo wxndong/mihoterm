@@ -27,14 +27,21 @@ Controller secrets and subscription sources are credentials. MihoTerm must:
 
 Managed mode is opt-in. It derives a separate runtime configuration and does
 not execute the stored profile verbatim. Controller and mixed proxy listeners
-bind only to loopback on dynamically reserved ports. TUN, iptables, custom
+bind only to loopback on dynamically reserved ports. The mixed listener and
+controller use independent generated credentials. TUN, iptables, custom
 listeners, tunnels, server inbounds, external UI, and unauthenticated alternate
 controller transports are disabled.
 
 The child receives a cleared environment, a private home directory, a random
 controller secret stored only in a mode `0600` runtime file, and `umask 077`.
-MihoTerm tracks and stops only the child it spawned. It never searches for or
-signals processes by name.
+The persistent session descriptor is owner-only. MihoTerm verifies the PID,
+Linux process start time, command line, and exact runtime path before signaling
+the process. It never searches for or signals processes by name.
+
+Installer-managed Bash integration never stores generated credentials in a
+startup file. It reads the active owner-only descriptor through `mihoterm env`,
+marks variables it owns, and restores any earlier proxy variables after stop
+or uninstall.
 
 ## Portable release supply chain
 

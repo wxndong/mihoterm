@@ -1,9 +1,14 @@
+use secrecy::{ExposeSecret, SecretString};
+
 use crate::{
     mihomo::{ApiError, OperatingMode},
     probe::ProbeTarget,
+    profile::{ProfileError, ProfileSource, ProfileSummary},
 };
 
 use super::{PolicyGroup, ProxyRow, Snapshot};
+
+const MAX_SOURCE_INPUT_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -12,10 +17,18 @@ pub enum Focus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    Dashboard,
+    Profiles,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
     Search,
     Confirm,
+    ProfileId,
+    SubscriptionUrl,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,7 +44,7 @@ pub struct StatusLine {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
     Up,
     Down,
@@ -44,6 +57,8 @@ pub enum Input {
     End,
     Tab,
     Character(char),
+    Paste(String),
+    Clear,
     Quit,
 }
 
@@ -52,6 +67,7 @@ pub enum Action {
     None,
     Refresh,
     Execute(Operation),
+    ManageProfile(ProfileOperation),
     Quit,
 }
 
@@ -79,15 +95,51 @@ pub enum OperationSuccess {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProfileOperation {
+    Add { id: String, source: ProfileSource },
+    ReplaceSource { id: String, source: ProfileSource },
+    Update { id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProfileOperationSuccess {
+    Added {
+        id: String,
+        profiles: Vec<ProfileSummary>,
+    },
+    SourceReplaced {
+        id: String,
+        profiles: Vec<ProfileSummary>,
+    },
+    Updated {
+        id: String,
+        profiles: Vec<ProfileSummary>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum PendingChange {
     SelectProxy { group: String, proxy: String },
     SetMode { mode: OperatingMode },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProfileDraftKind {
+    Add,
+    Replace,
+}
+
+#[derive(Debug)]
+struct ProfileDraft {
+    kind: ProfileDraftKind,
+    id: String,
 }
 
 #[derive(Debug)]
 pub struct App {
     pub controller: String,
     pub snapshot: Option<Snapshot>,
+    pub page: Page,
     pub focus: Focus,
     pub input_mode: InputMode,
     pub search: String,
@@ -98,6 +150,13 @@ pub struct App {
     operation_in_flight: bool,
     selected_group: usize,
     selected_proxy: usize,
+    profile_management: bool,
+    active_profile: Option<String>,
+    profiles: Vec<ProfileSummary>,
+    selected_profile: usize,
+    profile_id_input: String,
+    subscription_input: SecretString,
+    profile_draft: Option<ProfileDraft>,
 }
 
 impl App {
@@ -115,6 +174,7 @@ impl App {
         Self {
             controller,
             snapshot: None,
+            page: Page::Dashboard,
             focus: Focus::Groups,
             input_mode: InputMode::Normal,
             search: String::new(),
@@ -128,7 +188,32 @@ impl App {
             operation_in_flight: false,
             selected_group: 0,
             selected_proxy: 0,
+            profile_management: false,
+            active_profile: None,
+            profiles: Vec::new(),
+            selected_profile: 0,
+            profile_id_input: String::new(),
+            subscription_input: SecretString::from(String::new()),
+            profile_draft: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_managed_profiles(
+        controller: String,
+        probes: Vec<ProbeTarget>,
+        active_profile: String,
+        profiles: Vec<ProfileSummary>,
+    ) -> Self {
+        let mut app = Self::with_probes(controller, probes);
+        app.profile_management = true;
+        app.selected_profile = profiles
+            .iter()
+            .position(|profile| profile.id == active_profile)
+            .unwrap_or_default();
+        app.active_profile = Some(active_profile);
+        app.profiles = profiles;
+        app
     }
 
     pub fn apply_refresh(&mut self, result: Result<Snapshot, ApiError>) {
@@ -138,12 +223,51 @@ impl App {
                 let proxy_name = self.selected_proxy().map(|proxy| proxy.name.clone());
                 self.snapshot = Some(snapshot);
                 self.restore_selection(group_name.as_deref(), proxy_name.as_deref());
-                if self.status.kind != StatusKind::Ready {
+                if self.page == Page::Dashboard
+                    && (self.status.message == "Connecting..."
+                        || self.status.kind == StatusKind::Error)
+                {
                     self.status = StatusLine {
                         kind: StatusKind::Ready,
                         message: "Connected".into(),
                     };
                 }
+            }
+            Err(error) => {
+                self.status = StatusLine {
+                    kind: StatusKind::Error,
+                    message: error.to_string(),
+                };
+            }
+        }
+    }
+
+    pub fn apply_profile_operation_result(
+        &mut self,
+        result: Result<ProfileOperationSuccess, ProfileError>,
+    ) {
+        self.operation_in_flight = false;
+        match result {
+            Ok(ProfileOperationSuccess::Added { id, profiles }) => {
+                self.replace_profiles(profiles, &id);
+                self.status = StatusLine {
+                    kind: StatusKind::Ready,
+                    message: format!("Added {id}; restart with that profile to use it"),
+                };
+            }
+            Ok(ProfileOperationSuccess::SourceReplaced { id, profiles }) => {
+                self.replace_profiles(profiles, &id);
+                self.status = StatusLine {
+                    kind: StatusKind::Ready,
+                    message: self.profile_change_message("Replaced source for", &id),
+                };
+            }
+            Ok(ProfileOperationSuccess::Updated { id, profiles }) => {
+                self.replace_profiles(profiles, &id);
+                self.status = StatusLine {
+                    kind: StatusKind::Ready,
+                    message: self.profile_change_message("Updated", &id),
+                };
             }
             Err(error) => {
                 self.status = StatusLine {
@@ -239,6 +363,15 @@ impl App {
         if self.input_mode == InputMode::Confirm {
             return self.handle_confirm_input(input);
         }
+        if self.input_mode == InputMode::ProfileId {
+            return self.handle_profile_id_input(input);
+        }
+        if self.input_mode == InputMode::SubscriptionUrl {
+            return self.handle_subscription_input(input);
+        }
+        if self.page == Page::Profiles {
+            return self.handle_profiles_input(input);
+        }
 
         match input {
             Input::Up => self.move_selection(-1),
@@ -289,10 +422,41 @@ impl App {
                     return Action::Execute(operation);
                 }
             }
+            Input::Character('s') | Input::Character('S') => self.open_profiles(),
             _ => {}
         }
 
         Action::None
+    }
+
+    #[must_use]
+    pub fn profiles(&self) -> &[ProfileSummary] {
+        &self.profiles
+    }
+
+    #[must_use]
+    pub fn selected_profile(&self) -> Option<&ProfileSummary> {
+        self.profiles.get(self.selected_profile)
+    }
+
+    #[must_use]
+    pub fn selected_profile_position(&self) -> Option<usize> {
+        (!self.profiles.is_empty()).then_some(self.selected_profile)
+    }
+
+    #[must_use]
+    pub fn active_profile(&self) -> Option<&str> {
+        self.active_profile.as_deref()
+    }
+
+    #[must_use]
+    pub fn profile_id_input(&self) -> &str {
+        &self.profile_id_input
+    }
+
+    #[must_use]
+    pub fn subscription_input_len(&self) -> usize {
+        self.subscription_input.expose_secret().chars().count()
     }
 
     #[must_use]
@@ -369,10 +533,250 @@ impl App {
                 self.search.push(character);
                 self.ensure_selection_visible();
             }
+            Input::Paste(value) if !value.contains(['\r', '\n']) => {
+                self.search.push_str(&value);
+                self.ensure_selection_visible();
+            }
+            Input::Clear => {
+                self.search.clear();
+                self.ensure_selection_visible();
+            }
             _ => {}
         }
 
         Action::None
+    }
+
+    fn handle_profiles_input(&mut self, input: Input) -> Action {
+        match input {
+            Input::Up => self.move_profile_selection(-1),
+            Input::Down => self.move_profile_selection(1),
+            Input::Home => self.selected_profile = 0,
+            Input::End if !self.profiles.is_empty() => {
+                self.selected_profile = self.profiles.len() - 1;
+            }
+            Input::Escape | Input::Character('s' | 'S') => {
+                self.page = Page::Dashboard;
+                self.status = StatusLine {
+                    kind: StatusKind::Ready,
+                    message: "Connected".into(),
+                };
+            }
+            Input::Character('a' | 'A') => self.begin_add_profile(),
+            Input::Character('e' | 'E') => self.begin_edit_profile(),
+            Input::Character('u' | 'U' | 'r' | 'R') => {
+                if let Some(operation) = self.begin_profile_update() {
+                    return Action::ManageProfile(operation);
+                }
+            }
+            _ => {}
+        }
+        Action::None
+    }
+
+    fn handle_profile_id_input(&mut self, input: Input) -> Action {
+        match input {
+            Input::Escape => self.cancel_profile_form(),
+            Input::Enter if !self.profile_id_input.is_empty() => {
+                if !valid_profile_id(&self.profile_id_input) {
+                    self.status = StatusLine {
+                        kind: StatusKind::Error,
+                        message: "Profile ID must match [A-Za-z0-9][A-Za-z0-9_-]{0,39}".into(),
+                    };
+                } else {
+                    if let Some(draft) = &mut self.profile_draft {
+                        draft.id.clone_from(&self.profile_id_input);
+                    }
+                    self.input_mode = InputMode::SubscriptionUrl;
+                    self.status = StatusLine {
+                        kind: StatusKind::Info,
+                        message: "Paste the HTTPS subscription URL; input stays hidden".into(),
+                    };
+                }
+            }
+            Input::Backspace => {
+                self.profile_id_input.pop();
+            }
+            Input::Clear => self.profile_id_input.clear(),
+            Input::Character(character) if !character.is_control() => {
+                if self.profile_id_input.len() < 40 {
+                    self.profile_id_input.push(character);
+                }
+            }
+            Input::Paste(value) if !value.contains(['\r', '\n']) => {
+                if value.len() <= 40 {
+                    self.profile_id_input.push_str(&value);
+                    self.profile_id_input.truncate(40);
+                }
+            }
+            _ => {}
+        }
+        Action::None
+    }
+
+    fn handle_subscription_input(&mut self, input: Input) -> Action {
+        match input {
+            Input::Escape => self.cancel_profile_form(),
+            Input::Enter if !self.subscription_input.expose_secret().is_empty() => {
+                return self.submit_profile_form();
+            }
+            Input::Backspace => {
+                let mut value = self.subscription_input.expose_secret().to_owned();
+                value.pop();
+                self.subscription_input = SecretString::from(value);
+            }
+            Input::Clear => self.subscription_input = SecretString::from(String::new()),
+            Input::Character(character) if !character.is_control() => {
+                self.push_subscription_input(&character.to_string());
+            }
+            Input::Paste(value) => {
+                let value = value.trim_end_matches(['\r', '\n']);
+                if value.contains(['\r', '\n']) {
+                    self.status = StatusLine {
+                        kind: StatusKind::Error,
+                        message: "Subscription URL input must be one line".into(),
+                    };
+                } else {
+                    self.push_subscription_input(value);
+                }
+            }
+            _ => {}
+        }
+        Action::None
+    }
+
+    fn open_profiles(&mut self) {
+        if !self.profile_management {
+            self.status = StatusLine {
+                kind: StatusKind::Error,
+                message: "Profile management is available only for a managed session".into(),
+            };
+            return;
+        }
+        self.page = Page::Profiles;
+        self.search.clear();
+        self.status = StatusLine {
+            kind: StatusKind::Info,
+            message: "Subscription addresses are masked to protect credentials".into(),
+        };
+    }
+
+    fn begin_add_profile(&mut self) {
+        if self.operation_in_flight {
+            self.report_busy();
+            return;
+        }
+        self.profile_id_input.clear();
+        self.subscription_input = SecretString::from(String::new());
+        self.profile_draft = Some(ProfileDraft {
+            kind: ProfileDraftKind::Add,
+            id: String::new(),
+        });
+        self.input_mode = InputMode::ProfileId;
+        self.status = StatusLine {
+            kind: StatusKind::Info,
+            message: "Enter a short profile ID".into(),
+        };
+    }
+
+    fn begin_edit_profile(&mut self) {
+        if self.operation_in_flight {
+            self.report_busy();
+            return;
+        }
+        let Some(id) = self.selected_profile().map(|profile| profile.id.clone()) else {
+            self.status = StatusLine {
+                kind: StatusKind::Error,
+                message: "No profile is selected".into(),
+            };
+            return;
+        };
+        self.subscription_input = SecretString::from(String::new());
+        self.profile_draft = Some(ProfileDraft {
+            kind: ProfileDraftKind::Replace,
+            id: id.clone(),
+        });
+        self.input_mode = InputMode::SubscriptionUrl;
+        self.status = StatusLine {
+            kind: StatusKind::Info,
+            message: format!("Paste the replacement HTTPS URL for {id}; input stays hidden"),
+        };
+    }
+
+    fn begin_profile_update(&mut self) -> Option<ProfileOperation> {
+        if self.operation_in_flight {
+            self.report_busy();
+            return None;
+        }
+        let id = self.selected_profile()?.id.clone();
+        self.operation_in_flight = true;
+        self.status = StatusLine {
+            kind: StatusKind::Info,
+            message: format!("Downloading and validating {id}..."),
+        };
+        Some(ProfileOperation::Update { id })
+    }
+
+    fn submit_profile_form(&mut self) -> Action {
+        let Some(draft) = self.profile_draft.take() else {
+            self.input_mode = InputMode::Normal;
+            return Action::None;
+        };
+        let source = match ProfileSource::from_url(self.subscription_input.clone()) {
+            Ok(source) => source,
+            Err(error) => {
+                self.profile_draft = Some(draft);
+                self.status = StatusLine {
+                    kind: StatusKind::Error,
+                    message: error.to_string(),
+                };
+                return Action::None;
+            }
+        };
+        self.subscription_input = SecretString::from(String::new());
+        self.profile_id_input.clear();
+        self.input_mode = InputMode::Normal;
+        self.operation_in_flight = true;
+        self.status = StatusLine {
+            kind: StatusKind::Info,
+            message: format!("Downloading and validating {}...", draft.id),
+        };
+        let operation = match draft.kind {
+            ProfileDraftKind::Add => ProfileOperation::Add {
+                id: draft.id,
+                source,
+            },
+            ProfileDraftKind::Replace => ProfileOperation::ReplaceSource {
+                id: draft.id,
+                source,
+            },
+        };
+        Action::ManageProfile(operation)
+    }
+
+    fn cancel_profile_form(&mut self) {
+        self.profile_id_input.clear();
+        self.subscription_input = SecretString::from(String::new());
+        self.profile_draft = None;
+        self.input_mode = InputMode::Normal;
+        self.status = StatusLine {
+            kind: StatusKind::Info,
+            message: "Profile change cancelled".into(),
+        };
+    }
+
+    fn push_subscription_input(&mut self, value: &str) {
+        let current = self.subscription_input.expose_secret();
+        if current.len().saturating_add(value.len()) > MAX_SOURCE_INPUT_BYTES {
+            self.status = StatusLine {
+                kind: StatusKind::Error,
+                message: "Subscription URL input exceeds 16 KiB".into(),
+            };
+            return;
+        }
+        let mut next = current.to_owned();
+        next.push_str(value);
+        self.subscription_input = SecretString::from(next);
     }
 
     fn handle_confirm_input(&mut self, input: Input) -> Action {
@@ -506,6 +910,31 @@ impl App {
         };
     }
 
+    fn replace_profiles(&mut self, profiles: Vec<ProfileSummary>, selected_id: &str) {
+        self.selected_profile = profiles
+            .iter()
+            .position(|profile| profile.id == selected_id)
+            .unwrap_or_default();
+        self.profiles = profiles;
+    }
+
+    fn profile_change_message(&self, verb: &str, id: &str) -> String {
+        if self.active_profile.as_deref() == Some(id) {
+            format!("{verb} {id}; restart the managed proxy to apply it")
+        } else {
+            format!("{verb} {id}")
+        }
+    }
+
+    fn move_profile_selection(&mut self, offset: isize) {
+        if self.profiles.is_empty() {
+            self.selected_profile = 0;
+            return;
+        }
+        self.selected_profile = (self.selected_profile as isize + offset)
+            .rem_euclid(self.profiles.len() as isize) as usize;
+    }
+
     fn move_selection(&mut self, offset: isize) {
         match self.focus {
             Focus::Groups => {
@@ -600,6 +1029,17 @@ impl App {
     }
 }
 
+fn valid_profile_id(id: &str) -> bool {
+    let mut characters = id.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    first.is_ascii_alphanumeric()
+        && id.len() <= 40
+        && characters
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+}
+
 fn visible_indices<'a>(names: impl Iterator<Item = &'a str>, search: &str) -> Vec<usize> {
     let needle = search.to_lowercase();
     names
@@ -626,10 +1066,13 @@ fn move_in_visible(visible: &[usize], current: usize, offset: isize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        Action, App, Focus, Input, InputMode, Operation, OperationSuccess, PolicyGroup, ProxyRow,
-        Snapshot,
+        Action, App, Focus, Input, InputMode, Operation, OperationSuccess, Page, PolicyGroup,
+        ProfileOperation, ProfileOperationSuccess, ProxyRow, Snapshot,
     };
-    use crate::mihomo::OperatingMode;
+    use crate::{
+        mihomo::OperatingMode,
+        profile::{ProfileSourceSummary, ProfileSummary},
+    };
 
     fn snapshot() -> Snapshot {
         Snapshot {
@@ -667,6 +1110,24 @@ mod tests {
 
     fn loaded_app() -> App {
         let mut app = App::new("http://127.0.0.1:9090".into());
+        app.apply_refresh(Ok(snapshot()));
+        app
+    }
+
+    fn managed_app() -> App {
+        let mut app = App::with_managed_profiles(
+            "managed".into(),
+            Vec::new(),
+            "default".into(),
+            vec![ProfileSummary {
+                id: "default".into(),
+                has_backup: false,
+                source: ProfileSourceSummary {
+                    kind: "https",
+                    display: "https://example.com/…".into(),
+                },
+            }],
+        );
         app.apply_refresh(Ok(snapshot()));
         app
     }
@@ -815,5 +1276,75 @@ mod tests {
         app.apply_refresh(Ok(snapshot()));
 
         assert_eq!(app.status.message, "GitHub: Proxy B responded in 55 ms");
+    }
+
+    #[test]
+    fn profile_page_shows_masked_sources_and_supports_direction_keys() {
+        let mut app = managed_app();
+
+        assert_eq!(app.handle_input(Input::Character('s')), Action::None);
+
+        assert_eq!(app.page, Page::Profiles);
+        assert_eq!(
+            app.selected_profile()
+                .map(|profile| profile.source.display.as_str()),
+            Some("https://example.com/…")
+        );
+        assert_eq!(app.handle_input(Input::Down), Action::None);
+        assert_eq!(
+            app.selected_profile().map(|profile| profile.id.as_str()),
+            Some("default")
+        );
+    }
+
+    #[test]
+    fn add_profile_form_keeps_the_url_out_of_debug_output() {
+        let mut app = managed_app();
+        app.handle_input(Input::Character('s'));
+        app.handle_input(Input::Character('a'));
+        app.handle_input(Input::Paste("secondary".into()));
+        app.handle_input(Input::Enter);
+        app.handle_input(Input::Paste(
+            "https://example.com/sub?token=do-not-print".into(),
+        ));
+
+        let action = app.handle_input(Input::Enter);
+        let debug = format!("{action:?}");
+
+        assert!(matches!(
+            action,
+            Action::ManageProfile(ProfileOperation::Add { id, .. }) if id == "secondary"
+        ));
+        assert!(!debug.contains("do-not-print"));
+        assert_eq!(app.subscription_input_len(), 0);
+    }
+
+    #[test]
+    fn editing_the_active_source_reports_that_a_restart_is_required() {
+        let mut app = managed_app();
+        app.handle_input(Input::Character('s'));
+        app.handle_input(Input::Character('e'));
+        app.handle_input(Input::Paste("https://example.net/new?token=hidden".into()));
+
+        assert!(matches!(
+            app.handle_input(Input::Enter),
+            Action::ManageProfile(ProfileOperation::ReplaceSource { id, .. })
+                if id == "default"
+        ));
+
+        app.apply_profile_operation_result(Ok(ProfileOperationSuccess::SourceReplaced {
+            id: "default".into(),
+            profiles: vec![ProfileSummary {
+                id: "default".into(),
+                has_backup: true,
+                source: ProfileSourceSummary {
+                    kind: "https",
+                    display: "https://example.net/…".into(),
+                },
+            }],
+        }));
+
+        assert!(app.status.message.contains("restart"));
+        assert!(!app.status.message.contains("hidden"));
     }
 }

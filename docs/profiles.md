@@ -34,6 +34,23 @@ Profile IDs must match `[A-Za-z0-9][A-Za-z0-9_-]{0,39}`.
 
 ## Operations
 
+In managed TUI mode, press `s` to open the profile page:
+
+- `Up` and `Down` select a profile.
+- `a` adds a named HTTPS source.
+- `e` replaces the selected profile's HTTPS source.
+- `u` downloads and validates the selected stored source.
+- `s` or `Esc` returns to the proxy dashboard.
+
+Subscription input is hidden. The list renders only the HTTPS origin, such as
+`https://example.com/…`; URL paths and query credentials are never drawn.
+Adding or replacing a source downloads and validates the complete profile
+before modifying stored files. Updating the active profile does not interrupt
+the current connection and takes effect after `mihoterm stop` followed by
+`mihoterm`.
+
+The equivalent CLI operations are:
+
 ```console
 $ mihoterm profile list
 $ mihoterm profile update primary
@@ -41,10 +58,11 @@ $ mihoterm profile rollback primary
 $ mihoterm profile path primary
 ```
 
-`update` reloads the stored source, validates the complete result, writes it to
-a private temporary file, and atomically replaces the current profile. The
-previous validated version becomes the rollback target. `rollback` swaps those
-two versions, so the operation can be reversed once more if needed.
+`update` reloads the stored source, validates the complete result, writes it
+through private temporary files, and atomically replaces each stored file.
+Replacing a source follows the same validate-before-write contract. The
+previous validated YAML becomes the rollback target. `rollback` swaps those
+two YAML versions, so the operation can be reversed once more if needed.
 
 Mutating commands acquire a non-blocking advisory lock. A concurrent command
 fails visibly instead of racing another update.

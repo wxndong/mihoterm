@@ -15,7 +15,7 @@ use std::{
 
 use rustix::{
     fs::Mode,
-    process::{Pid, Signal, getppid, kill_process, set_parent_process_death_signal, umask},
+    process::{Pid, Signal, getppid, kill_process, set_parent_process_death_signal, setsid, umask},
 };
 use secrecy::{ExposeSecret, SecretString};
 
@@ -39,6 +39,9 @@ pub struct ManagedRuntime {
     controller_url: String,
     mixed_port: u16,
     secret: SecretString,
+    proxy_username: SecretString,
+    proxy_password: SecretString,
+    cleanup_on_drop: bool,
 }
 
 impl ManagedRuntime {
@@ -46,6 +49,23 @@ impl ManagedRuntime {
         mihomo: &Path,
         profile: &Path,
         runtime_root: &Path,
+    ) -> Result<Self, RuntimeError> {
+        Self::start_with_lifetime(mihomo, profile, runtime_root, false).await
+    }
+
+    pub async fn start_persistent(
+        mihomo: &Path,
+        profile: &Path,
+        runtime_root: &Path,
+    ) -> Result<Self, RuntimeError> {
+        Self::start_with_lifetime(mihomo, profile, runtime_root, true).await
+    }
+
+    async fn start_with_lifetime(
+        mihomo: &Path,
+        profile: &Path,
+        runtime_root: &Path,
+        persistent: bool,
     ) -> Result<Self, RuntimeError> {
         let executable = resolve_executable(mihomo)?;
         let runtime_root = prepare_runtime_root(runtime_root)?;
@@ -56,6 +76,7 @@ impl ManagedRuntime {
             profile,
             runtime_root.clone(),
             runtime_dir.clone(),
+            persistent,
         )
         .await;
         if result.is_err() {
@@ -69,6 +90,7 @@ impl ManagedRuntime {
         profile: &Path,
         runtime_root: PathBuf,
         runtime_dir: PathBuf,
+        persistent: bool,
     ) -> Result<Self, RuntimeError> {
         let home = runtime_dir.join("home");
         let temporary = runtime_dir.join("tmp");
@@ -81,12 +103,16 @@ impl ManagedRuntime {
         let mixed_port = ports.mixed_port();
         let controller_url = format!("http://127.0.0.1:{controller_port}");
         let secret = generate_secret()?;
+        let proxy_username = SecretString::from(format!("mihoterm-{}", random_hex::<8>()?));
+        let proxy_password = generate_secret()?;
         let profile = read_private_profile(profile)?;
         let configuration = build_managed_config(
             &profile,
             controller_port,
             mixed_port,
             secret.expose_secret(),
+            proxy_username.expose_secret(),
+            proxy_password.expose_secret(),
         )?;
         let configuration_path = runtime_dir.join(RUNTIME_CONFIG);
         write_private(&configuration_path, &configuration)?;
@@ -112,6 +138,7 @@ impl ManagedRuntime {
             &temporary,
             &configuration_path,
             &log_path,
+            persistent,
         )?;
 
         Ok(Self {
@@ -121,6 +148,9 @@ impl ManagedRuntime {
             controller_url,
             mixed_port,
             secret,
+            proxy_username,
+            proxy_password,
+            cleanup_on_drop: true,
         })
     }
 
@@ -141,6 +171,36 @@ impl ManagedRuntime {
     #[must_use]
     pub const fn mixed_port(&self) -> u16 {
         self.mixed_port
+    }
+
+    #[must_use]
+    pub fn proxy_username(&self) -> &SecretString {
+        &self.proxy_username
+    }
+
+    #[must_use]
+    pub fn proxy_password(&self) -> &SecretString {
+        &self.proxy_password
+    }
+
+    #[must_use]
+    pub fn controller_secret(&self) -> &SecretString {
+        &self.secret
+    }
+
+    #[must_use]
+    pub fn runtime_directory(&self) -> &Path {
+        &self.runtime_dir
+    }
+
+    #[must_use]
+    pub fn child_id(&self) -> Option<u32> {
+        self.child.as_ref().map(Child::id)
+    }
+
+    pub fn detach(mut self) {
+        self.cleanup_on_drop = false;
+        self.child.take();
     }
 
     pub async fn wait_ready(
@@ -251,7 +311,7 @@ fn bundled_mihomo_for(current_executable: &Path) -> Option<PathBuf> {
 
 impl Drop for ManagedRuntime {
     fn drop(&mut self) {
-        if self.stop_child(false).is_ok() {
+        if self.cleanup_on_drop && self.stop_child(false).is_ok() {
             cleanup_runtime_directory(&self.runtime_root, &self.runtime_dir);
         }
     }
@@ -263,15 +323,20 @@ pub fn exec_managed_child(
     home: &Path,
     configuration: &Path,
     test: bool,
+    detached: bool,
 ) -> Result<(), RuntimeError> {
     let parent_pid = i32::try_from(parent_pid)
         .ok()
         .and_then(Pid::from_raw)
         .ok_or(RuntimeError::ChildInitialization)?;
-    set_parent_process_death_signal(Some(Signal::TERM))
-        .map_err(|_| RuntimeError::ChildInitialization)?;
-    if getppid() != Some(parent_pid) {
-        return Err(RuntimeError::ParentExited);
+    if detached {
+        setsid().map_err(|_| RuntimeError::ChildInitialization)?;
+    } else {
+        set_parent_process_death_signal(Some(Signal::TERM))
+            .map_err(|_| RuntimeError::ChildInitialization)?;
+        if getppid() != Some(parent_pid) {
+            return Err(RuntimeError::ParentExited);
+        }
     }
     umask(Mode::RWXG | Mode::RWXO);
 
@@ -327,8 +392,15 @@ async fn validate_configuration(
     log_path: &Path,
 ) -> Result<(), RuntimeError> {
     let (stdout, stderr) = private_log(log_path, false)?;
-    let mut command =
-        child_wrapper_command(launcher, executable, home, temporary, configuration, true);
+    let mut command = child_wrapper_command(
+        launcher,
+        executable,
+        home,
+        temporary,
+        configuration,
+        true,
+        false,
+    );
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
@@ -363,10 +435,18 @@ fn spawn_managed_child(
     temporary: &Path,
     configuration: &Path,
     log_path: &Path,
+    detached: bool,
 ) -> Result<Child, RuntimeError> {
     let (stdout, stderr) = private_log(log_path, true)?;
-    let mut command =
-        child_wrapper_command(launcher, executable, home, temporary, configuration, false);
+    let mut command = child_wrapper_command(
+        launcher,
+        executable,
+        home,
+        temporary,
+        configuration,
+        false,
+        detached,
+    );
     command
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
@@ -382,6 +462,7 @@ fn child_wrapper_command(
     temporary: &Path,
     configuration: &Path,
     test: bool,
+    detached: bool,
 ) -> Command {
     let mut command = isolated_command(launcher, home, temporary);
     command
@@ -396,6 +477,9 @@ fn child_wrapper_command(
         .arg(configuration);
     if test {
         command.arg("--test");
+    }
+    if detached {
+        command.arg("--detached");
     }
     command
 }
@@ -444,7 +528,7 @@ fn is_executable(path: &Path) -> bool {
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
-fn prepare_runtime_root(path: &Path) -> Result<PathBuf, RuntimeError> {
+pub(super) fn prepare_runtime_root(path: &Path) -> Result<PathBuf, RuntimeError> {
     if path.exists() {
         let metadata =
             fs::symlink_metadata(path).map_err(|_| RuntimeError::RuntimeInitialization)?;
@@ -554,7 +638,7 @@ fn generate_secret() -> Result<SecretString, RuntimeError> {
     random_hex::<32>().map(SecretString::from)
 }
 
-fn random_hex<const N: usize>() -> Result<String, RuntimeError> {
+pub(super) fn random_hex<const N: usize>() -> Result<String, RuntimeError> {
     let mut bytes = [0_u8; N];
     getrandom::fill(&mut bytes).map_err(|_| RuntimeError::Random)?;
     let mut output = String::with_capacity(N * 2);
@@ -564,13 +648,13 @@ fn random_hex<const N: usize>() -> Result<String, RuntimeError> {
     Ok(output)
 }
 
-fn sync_directory(path: &Path) -> Result<(), RuntimeError> {
+pub(super) fn sync_directory(path: &Path) -> Result<(), RuntimeError> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
         .map_err(|_| RuntimeError::ConfigurationWrite)
 }
 
-fn remove_runtime_directory(root: &Path, path: &Path) -> Result<(), RuntimeError> {
+pub(super) fn remove_runtime_directory(root: &Path, path: &Path) -> Result<(), RuntimeError> {
     if path.parent() != Some(root)
         || !path
             .file_name()
@@ -733,6 +817,9 @@ mod tests {
             controller_url: "http://127.0.0.1:1".into(),
             mixed_port: 2,
             secret: SecretString::from("fixture-only"),
+            proxy_username: SecretString::from("fixture-user"),
+            proxy_password: SecretString::from("fixture-password"),
+            cleanup_on_drop: true,
         };
 
         runtime.stop().expect("managed runtime should stop");

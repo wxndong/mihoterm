@@ -1,23 +1,50 @@
 #![forbid(unsafe_code)]
 
-use std::{path::Path, process::ExitCode, time::Duration};
+use std::{
+    env,
+    ffi::OsString,
+    io,
+    path::{Path, PathBuf},
+    process::{Command as ProcessCommand, ExitCode, Stdio},
+    time::Duration,
+};
 
 use clap::Parser;
 use mihoterm::{
     app::{App, fetch_snapshot},
-    cli::{Cli, Command, ProfileCommand},
+    cli::{Cli, Command, DEFAULT_CONTROLLER, ProfileCommand},
     config::{AppPaths, load_controller_secret, load_probe_targets},
     mihomo::ApiClient,
     onboarding,
     profile::{ProfileSource, ProfileStore},
-    runtime::{ManagedRuntime, RuntimeError, default_mihomo_executable, exec_managed_child},
+    runtime::{
+        ManagedSession, RuntimeError, SessionManager, default_mihomo_executable,
+        exec_managed_child, shell_clear_owned,
+    },
     tui,
 };
 use tokio::signal::unix::{SignalKind, signal};
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    match run_until_signal(Cli::parse()).await {
+    let cli = Cli::parse();
+    let signal_passthrough = matches!(
+        &cli.command,
+        Some(
+            Command::Shell { .. }
+                | Command::Exec { .. }
+                | Command::Uninstall { .. }
+                | Command::RuntimeChild { .. }
+                | Command::SessionStart { .. }
+        )
+    );
+    let result = if signal_passthrough {
+        run(cli).await
+    } else {
+        run_until_signal(cli).await
+    };
+
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("mihoterm: {error}");
@@ -56,10 +83,22 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             home,
             config,
             test,
+            detached,
         }) => {
-            exec_managed_child(parent_pid, &binary, &home, &config, test)?;
+            exec_managed_child(parent_pid, &binary, &home, &config, test, detached)?;
             unreachable!("a successful child exec does not return");
         }
+        Some(Command::SessionStart {
+            profile,
+            profile_path,
+            mihomo,
+            runtime_root,
+        }) => {
+            let manager = SessionManager::new(&runtime_root)?;
+            manager.start(&profile, &profile_path, &mihomo).await?;
+            return Ok(());
+        }
+        Some(Command::Uninstall { purge }) => return run_uninstaller(purge),
         command => command,
     };
 
@@ -71,42 +110,108 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     )?;
     paths.prepare_private_state()?;
 
-    let command = match command {
-        Some(Command::Profile { command }) => {
-            return run_profile(command, paths.profiles_dir()).await;
+    match command {
+        Some(Command::Profile { command }) => run_profile(command, paths.profiles_dir()).await,
+        Some(Command::Start { profile, mihomo }) => {
+            let session =
+                start_session_direct(profile.as_deref(), mihomo.as_deref(), &paths).await?;
+            println!(
+                "Managed proxy running | profile {} | mixed 127.0.0.1:{} | pid {}",
+                session.profile(),
+                session.mixed_port(),
+                session.pid()
+            );
+            Ok(())
+        }
+        Some(Command::Stop) => {
+            let manager = SessionManager::new(paths.runtime_dir())?;
+            if manager.stop().await? {
+                println!("Stopped the managed proxy.");
+            } else {
+                println!("The managed proxy is not running.");
+            }
+            Ok(())
+        }
+        Some(Command::Env { if_running }) => {
+            let manager = SessionManager::new(paths.runtime_dir())?;
+            match manager.active()? {
+                Some(session) => print!("{}", session.proxy_environment().shell_exports()),
+                None if if_running => print!("{}", shell_clear_owned()),
+                None => return Err(RuntimeError::SessionNotRunning.into()),
+            }
+            Ok(())
+        }
+        Some(Command::Shell { profile, mihomo }) => {
+            let session = ensure_session(profile.as_deref(), mihomo.as_deref(), &paths).await?;
+            run_proxy_shell(&session)
+        }
+        Some(Command::Exec {
+            profile,
+            mihomo,
+            command,
+        }) => {
+            let session = ensure_session(profile.as_deref(), mihomo.as_deref(), &paths).await?;
+            run_proxy_command(&session, &command)
         }
         Some(Command::Run { profile, mihomo }) => {
             let probes = load_probe_targets(paths.config_file(), config_is_explicit)?;
-            return run_managed(
-                profile.as_deref(),
-                mihomo.as_deref(),
-                &paths,
+            let session = ensure_session(profile.as_deref(), mihomo.as_deref(), &paths).await?;
+            run_session_tui(
+                session,
                 probes,
                 Duration::from_millis(timeout_ms),
                 Duration::from_millis(refresh_ms),
+                paths.profiles_dir(),
             )
-            .await;
+            .await
+        }
+        None if controller.is_none() => {
+            let probes = load_probe_targets(paths.config_file(), config_is_explicit)?;
+            let session = ensure_session(None, None, &paths).await?;
+            run_session_tui(
+                session,
+                probes,
+                Duration::from_millis(timeout_ms),
+                Duration::from_millis(refresh_ms),
+                paths.profiles_dir(),
+            )
+            .await
         }
         None => {
-            let probes = load_probe_targets(paths.config_file(), config_is_explicit)?;
-            return run_managed(
-                None,
-                None,
-                &paths,
-                probes,
+            let secret = load_controller_secret(secret_file.as_deref())?;
+            let client = ApiClient::with_timeout(
+                controller.as_deref().unwrap_or(DEFAULT_CONTROLLER),
+                secret,
                 Duration::from_millis(timeout_ms),
-                Duration::from_millis(refresh_ms),
-            )
-            .await;
+            )?;
+            let controller = client.controller_url().origin().ascii_serialization();
+            let probes = load_probe_targets(paths.config_file(), config_is_explicit)?;
+            let app = App::with_probes(controller, probes);
+            tui::run(client, app, Duration::from_millis(refresh_ms), None).await?;
+            Ok(())
         }
-        command => command,
-    };
-
-    let secret = load_controller_secret(secret_file.as_deref())?;
-    let client = ApiClient::with_timeout(&controller, secret, Duration::from_millis(timeout_ms))?;
-
-    match command {
+        Some(Command::Status) if controller.is_none() => {
+            let manager = SessionManager::new(paths.runtime_dir())?;
+            let session = manager.active()?.ok_or(RuntimeError::SessionNotRunning)?;
+            let snapshot =
+                fetch_snapshot(&session.api_client(Duration::from_millis(timeout_ms))?).await?;
+            println!(
+                "MihoTerm proxy running | Mihomo {} | mode {} | profile {} | mixed 127.0.0.1:{} | pid {}",
+                snapshot.version,
+                snapshot.mode,
+                session.profile(),
+                session.mixed_port(),
+                session.pid()
+            );
+            Ok(())
+        }
         Some(Command::Status) => {
+            let secret = load_controller_secret(secret_file.as_deref())?;
+            let client = ApiClient::with_timeout(
+                controller.as_deref().unwrap_or(DEFAULT_CONTROLLER),
+                secret,
+                Duration::from_millis(timeout_ms),
+            )?;
             let snapshot = fetch_snapshot(&client).await?;
             println!(
                 "Mihomo {} | mode {} | {} policy groups",
@@ -117,73 +222,170 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Some(Command::Attach) => {
+            let secret = load_controller_secret(secret_file.as_deref())?;
+            let client = ApiClient::with_timeout(
+                controller.as_deref().unwrap_or(DEFAULT_CONTROLLER),
+                secret,
+                Duration::from_millis(timeout_ms),
+            )?;
             let controller = client.controller_url().origin().ascii_serialization();
             let probes = load_probe_targets(paths.config_file(), config_is_explicit)?;
             let app = App::with_probes(controller, probes);
-            tui::run(client, app, Duration::from_millis(refresh_ms)).await?;
+            tui::run(client, app, Duration::from_millis(refresh_ms), None).await?;
             Ok(())
         }
-        None
-        | Some(Command::Profile { .. } | Command::Run { .. } | Command::RuntimeChild { .. }) => {
-            unreachable!("non-attach commands return before API setup")
-        }
+        Some(
+            Command::Uninstall { .. } | Command::RuntimeChild { .. } | Command::SessionStart { .. },
+        ) => unreachable!("internal commands return before path discovery"),
     }
 }
 
-async fn run_managed(
+async fn start_session_direct(
     profile: Option<&str>,
     mihomo: Option<&Path>,
     paths: &AppPaths,
-    probes: Vec<mihoterm::probe::ProbeTarget>,
-    request_timeout: Duration,
-    refresh_interval: Duration,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<ManagedSession, Box<dyn std::error::Error>> {
+    let manager = SessionManager::new(paths.runtime_dir())?;
+    if let Some(session) = manager.active()? {
+        if profile.is_none_or(|requested| requested == session.profile()) {
+            return Ok(session);
+        }
+        return Err(RuntimeError::SessionProfileConflict.into());
+    }
+
     let store = ProfileStore::new(paths.profiles_dir())?;
     let profile = onboarding::resolve_profile(&store, profile).await?;
     let profile_path = store.profile_path(&profile)?;
     let mihomo = mihomo
         .map(Path::to_owned)
         .unwrap_or_else(default_mihomo_executable);
-    let mut runtime = ManagedRuntime::start(&mihomo, &profile_path, paths.runtime_dir()).await?;
-    let readiness_client = runtime.api_client(Duration::from_millis(500))?;
-    runtime
-        .wait_ready(&readiness_client, Duration::from_secs(15))
-        .await?;
+    manager
+        .start(&profile, &profile_path, &mihomo)
+        .await
+        .map_err(Into::into)
+}
 
-    let client = runtime.api_client(request_timeout)?;
-    let display = format!("managed  mixed 127.0.0.1:{}", runtime.mixed_port());
-    let app = App::with_probes(display, probes);
-
-    enum Outcome {
-        Tui(Result<(), tui::TuiError>),
-        Child(Result<std::process::ExitStatus, RuntimeError>),
+async fn ensure_session(
+    profile: Option<&str>,
+    mihomo: Option<&Path>,
+    paths: &AppPaths,
+) -> Result<ManagedSession, Box<dyn std::error::Error>> {
+    let manager = SessionManager::new(paths.runtime_dir())?;
+    if let Some(session) = manager.active()? {
+        if profile.is_none_or(|requested| requested == session.profile()) {
+            return Ok(session);
+        }
+        return Err(RuntimeError::SessionProfileConflict.into());
     }
 
-    let outcome = tokio::select! {
-        result = tui::run(client, app, refresh_interval) => Outcome::Tui(result),
-        status = runtime.wait() => Outcome::Child(status),
-    };
+    let store = ProfileStore::new(paths.profiles_dir())?;
+    let profile = onboarding::resolve_profile(&store, profile).await?;
+    let profile_path = store.profile_path(&profile)?;
+    let mihomo = mihomo
+        .map(Path::to_owned)
+        .unwrap_or_else(default_mihomo_executable);
+    let status = ProcessCommand::new(env::current_exe()?)
+        .arg("__session-start")
+        .arg("--profile")
+        .arg(&profile)
+        .arg("--profile-path")
+        .arg(profile_path)
+        .arg("--mihomo")
+        .arg(mihomo)
+        .arg("--runtime-root")
+        .arg(paths.runtime_dir())
+        .stdin(Stdio::null())
+        .status()?;
+    if !status.success() {
+        return Err(RuntimeError::UnexpectedExit {
+            code: status.code(),
+        }
+        .into());
+    }
+    manager
+        .active()?
+        .ok_or_else(|| RuntimeError::SessionNotRunning.into())
+}
 
-    match outcome {
-        Outcome::Tui(result) => {
-            let stop = runtime.stop();
-            result?;
-            stop?;
-            Ok(())
-        }
-        Outcome::Child(status) => {
-            let status = status?;
-            Err(RuntimeError::UnexpectedExit {
-                code: status.code(),
-            }
-            .into())
-        }
+async fn run_session_tui(
+    session: ManagedSession,
+    probes: Vec<mihoterm::probe::ProbeTarget>,
+    request_timeout: Duration,
+    refresh_interval: Duration,
+    profiles_dir: PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let client = session.api_client(request_timeout)?;
+    let display = format!(
+        "managed  profile {}  mixed 127.0.0.1:{}",
+        session.profile(),
+        session.mixed_port()
+    );
+    let active_profile = session.profile().to_owned();
+    let store = ProfileStore::new(profiles_dir)?;
+    let profiles = store.list()?;
+    let app = App::with_managed_profiles(display, probes, active_profile, profiles);
+    tui::run(client, app, refresh_interval, Some(store)).await?;
+    Ok(())
+}
+
+fn run_proxy_shell(session: &ManagedSession) -> Result<(), Box<dyn std::error::Error>> {
+    let shell = env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
+    let mut command = ProcessCommand::new(shell);
+    session.proxy_environment().apply(&mut command);
+    let status = command.status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("proxy shell exited with {status}")).into())
+    }
+}
+
+fn run_proxy_command(
+    session: &ManagedSession,
+    arguments: &[OsString],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (program, arguments) = arguments
+        .split_first()
+        .ok_or_else(|| io::Error::other("a command is required"))?;
+    let mut command = ProcessCommand::new(program);
+    command.args(arguments);
+    session.proxy_environment().apply(&mut command);
+    let status = command.status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("proxied command exited with {status}")).into())
+    }
+}
+
+fn run_uninstaller(purge: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let executable = env::current_exe()?;
+    let script = executable
+        .parent()
+        .map(|directory| directory.join("install.sh"))
+        .ok_or_else(|| io::Error::other("the installed bundle directory is unavailable"))?;
+    if !script.is_file() {
+        return Err(
+            io::Error::other("install.sh was not found beside the MihoTerm executable").into(),
+        );
+    }
+
+    let mut command = ProcessCommand::new("/bin/sh");
+    command.arg(script).arg("uninstall");
+    if purge {
+        command.arg("--purge");
+    }
+    let status = command.status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("uninstaller exited with {status}")).into())
     }
 }
 
 async fn run_profile(
     command: ProfileCommand,
-    profiles_dir: std::path::PathBuf,
+    profiles_dir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = ProfileStore::new(profiles_dir)?;
 

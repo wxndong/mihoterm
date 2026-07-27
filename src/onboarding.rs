@@ -216,6 +216,10 @@ mod tests {
         ProfileSummary {
             id: id.to_owned(),
             has_backup: false,
+            source: crate::profile::ProfileSourceSummary {
+                kind: "https",
+                display: "https://example.com/…".into(),
+            },
         }
     }
 }

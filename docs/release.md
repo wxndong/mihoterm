@@ -17,6 +17,8 @@ Planned first-release gates:
 
 - `v0.1.0-alpha.1`: x86_64 portable bundle, guided setup, safe controls,
   profiles, and isolated canary use;
+- `v0.1.0-alpha.2`: persistent authenticated proxy lifecycle, user-local
+  installation, safe uninstall, shell integration, and TUI source management;
 - `v0.1.0-beta.1`: live traffic and connection views plus validated aarch64
   and armv7 bundles;
 - `v0.1.0-rc.1`: security audit, compatibility review, and release automation;

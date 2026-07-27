@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, List, ListItem, ListState, Paragraph},
 };
 
-use crate::app::{App, Focus, InputMode, StatusKind};
+use crate::app::{App, Focus, InputMode, Page, StatusKind};
 
 const MIN_WIDTH: u16 = 52;
 const MIN_HEIGHT: u16 = 10;
@@ -30,10 +30,16 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     .split(area);
     render_header(frame, vertical[0], app);
 
-    let horizontal = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
-        .split(vertical[1]);
-    render_groups(frame, horizontal[0], app);
-    render_proxies(frame, horizontal[1], app);
+    match app.page {
+        Page::Dashboard => {
+            let horizontal =
+                Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
+                    .split(vertical[1]);
+            render_groups(frame, horizontal[0], app);
+            render_proxies(frame, horizontal[1], app);
+        }
+        Page::Profiles => render_profiles(frame, vertical[1], app),
+    }
     render_footer(frame, vertical[2], app);
 }
 
@@ -133,6 +139,62 @@ fn render_proxies(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
+fn render_profiles(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let horizontal =
+        Layout::horizontal([Constraint::Percentage(38), Constraint::Percentage(62)]).split(area);
+    let items = app
+        .profiles()
+        .iter()
+        .map(|profile| {
+            let active = if app.active_profile() == Some(profile.id.as_str()) {
+                "*"
+            } else {
+                " "
+            };
+            ListItem::new(format!(
+                "{active} {}  [{}]",
+                profile.id, profile.source.kind
+            ))
+        })
+        .collect::<Vec<_>>();
+    let mut state = ListState::default().with_selected(app.selected_profile_position());
+    let list = List::new(items)
+        .block(pane_block(" Profiles ", true))
+        .highlight_symbol("> ")
+        .highlight_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
+    frame.render_stateful_widget(list, horizontal[0], &mut state);
+
+    let details = app.selected_profile().map_or_else(
+        || "No managed profiles.".to_owned(),
+        |profile| {
+            let active = if app.active_profile() == Some(profile.id.as_str()) {
+                "yes"
+            } else {
+                "no"
+            };
+            let backup = if profile.has_backup {
+                "available"
+            } else {
+                "none"
+            };
+            format!(
+                "Profile: {}\nActive: {active}\nSource type: {}\nSource: {}\nPrevious version: {backup}\n\nThe source address is deliberately masked. URL paths and query credentials are never drawn on screen.",
+                profile.id, profile.source.kind, profile.source.display
+            )
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(details)
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .block(pane_block(" Subscription source ", false)),
+        horizontal[1],
+    );
+}
+
 fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let status_style = match app.status.kind {
         StatusKind::Info => Style::default().fg(Color::Yellow),
@@ -142,8 +204,19 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let help = match app.input_mode {
         InputMode::Search => format!("/{}  Enter keep  Esc clear", app.search),
         InputMode::Confirm => "y/Enter confirm  n/Esc cancel".into(),
+        InputMode::ProfileId => format!(
+            "Profile ID: {}  Enter next  Ctrl-U clear  Esc cancel",
+            app.profile_id_input()
+        ),
+        InputMode::SubscriptionUrl => format!(
+            "Subscription URL: hidden ({} chars)  Enter save  Ctrl-U clear  Esc cancel",
+            app.subscription_input_len()
+        ),
+        InputMode::Normal if app.page == Page::Profiles => {
+            "Up/Down choose  a add  e replace URL  u update  s/Esc back  q quit".into()
+        }
         InputMode::Normal => format!(
-            "Arrows move/focus  Enter select  m mode  d probe [{}]  p target  / search  r refresh  q quit",
+            "Arrows move/focus  Enter select  m mode  d probe [{}]  p target  / search  r refresh  s sources  q quit",
             app.current_probe().name()
         ),
     };
@@ -173,7 +246,10 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     use super::render;
-    use crate::app::{App, PolicyGroup, ProxyRow, Snapshot};
+    use crate::{
+        app::{App, Input, PolicyGroup, ProxyRow, Snapshot},
+        profile::{ProfileSourceSummary, ProfileSummary},
+    };
 
     #[test]
     fn renders_a_read_only_snapshot() {
@@ -209,5 +285,45 @@ mod tests {
         assert!(text.contains("Auto"));
         assert!(text.contains("Proxy A"));
         assert!(text.contains("31 ms"));
+    }
+
+    #[test]
+    fn renders_profile_management_without_exposing_url_credentials() {
+        let mut app = App::with_managed_profiles(
+            "managed".into(),
+            Vec::new(),
+            "default".into(),
+            vec![ProfileSummary {
+                id: "default".into(),
+                has_backup: true,
+                source: ProfileSourceSummary {
+                    kind: "https",
+                    display: "https://example.com/…".into(),
+                },
+            }],
+        );
+        app.handle_input(Input::Character('s'));
+        app.handle_input(Input::Character('e'));
+        app.handle_input(Input::Paste(
+            "https://example.com/private?token=never-render".into(),
+        ));
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+
+        terminal
+            .draw(|frame| render(frame, &app))
+            .expect("profile page should render");
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(text.contains("https://example.com/"));
+        assert!(text.contains("hidden ("));
+        assert!(!text.contains("private"));
+        assert!(!text.contains("never-render"));
     }
 }

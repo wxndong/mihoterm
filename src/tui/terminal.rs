@@ -1,3 +1,7 @@
+use crossterm::{
+    event::{DisableBracketedPaste, EnableBracketedPaste},
+    execute,
+};
 use ratatui::DefaultTerminal;
 
 use crate::app::App;
@@ -10,7 +14,12 @@ pub struct TerminalSession {
 
 impl TerminalSession {
     pub fn enter() -> std::io::Result<Self> {
-        ratatui::try_init().map(|terminal| Self { terminal })
+        let mut terminal = ratatui::try_init()?;
+        if let Err(error) = execute!(terminal.backend_mut(), EnableBracketedPaste) {
+            let _ = ratatui::try_restore();
+            return Err(error);
+        }
+        Ok(Self { terminal })
     }
 
     pub fn draw(&mut self, app: &App) -> std::io::Result<()> {
@@ -21,6 +30,7 @@ impl TerminalSession {
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
+        let _ = execute!(self.terminal.backend_mut(), DisableBracketedPaste);
         let _ = ratatui::try_restore();
     }
 }

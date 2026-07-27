@@ -10,7 +10,9 @@ keyboard input ─┐
                 ├─> application state ─> Mihomo API client
 terminal view ──┘            │
                              ├─> profile store
-                             └─> isolated runtime manager
+                             └─> persistent session manager ─> Mihomo
+
+installer ─> user-local release + reversible Bash environment integration
 ```
 
 The terminal view renders immutable snapshots. Network, profile, and process
@@ -30,10 +32,10 @@ requests a supported API operation.
 Managed mode is the no-argument default. First-run onboarding creates a
 protected profile, then starts an explicitly selected or bundle-adjacent
 Mihomo executable with a dedicated runtime directory, dynamically allocated
-loopback ports, and a generated controller secret. MihoTerm records and
-signals only the exact child process it started. A small internal wrapper
-applies a parent-death signal and then replaces itself with Mihomo, preserving
-the tracked PID.
+loopback ports, generated controller and mixed-port credentials, and a durable
+owner-only session descriptor. Mihomo runs independently of the TUI. MihoTerm
+records and signals only the exact process it started after verifying both its
+PID start time and command line.
 
 ## Safety invariants
 
@@ -50,6 +52,12 @@ the tracked PID.
     scripts.
 11. Stored profiles are immutable inputs; managed mode runs a separate,
     hardened derivative.
+12. The mixed proxy listener binds only to loopback and always requires
+    generated per-session authentication.
+13. Shell integration preserves prior proxy variables and removes only
+    marker-delimited content that the installer owns.
+14. Uninstall preserves profiles unless the user explicitly requests
+    `--purge`.
 
 ## Module boundaries
 
@@ -58,7 +66,8 @@ the tracked PID.
 - `mihomo`: typed API transport and compatibility handling.
 - `profile`: protected source storage, bounded loading, validation, atomic
   update, and rollback.
-- `runtime`: isolated child-process lifecycle.
+- `runtime`: detached process lifecycle, authenticated session descriptors,
+  proxy environments, and exact-PID stop behavior.
 - `config`: XDG paths and user preferences.
 - `onboarding`: deterministic profile selection and hidden first-run input.
 - `tls`: one process-wide Ring provider for rustls clients.
