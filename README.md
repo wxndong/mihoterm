@@ -3,8 +3,9 @@
 A tiny, fast, keyboard-first TUI for [Mihomo](https://github.com/MetaCubeX/mihomo)
 on Linux.
 
-> **Status:** v0.1.0-alpha.2 candidate. Managed mode, user-local installation,
-> and portable packaging are under active validation.
+> **Status:** v0.1.0-alpha.2 is an early x86_64 Linux prerelease. Managed mode,
+> user-local installation, and portable packaging have passed the project
+> release gates.
 
 MihoTerm is an independent client for the Mihomo external-controller API. It
 does not provide proxy services, subscription content, or credentials.
