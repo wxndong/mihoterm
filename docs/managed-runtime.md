@@ -1,41 +1,65 @@
 # Managed Runtime
 
-Managed mode runs one Mihomo child alongside the TUI. It is the default
-end-user mode, while attaching to an existing controller is explicit:
+Managed mode owns one persistent, per-user Mihomo process. It is the default
+end-user mode, while attaching to an existing controller remains explicit:
 
 ```console
 $ mihoterm
-$ mihoterm run
+$ mihoterm start
+$ mihoterm status
+$ mihoterm stop
 $ mihoterm run primary
-$ mihoterm run primary --mihomo /opt/mihomo/bin/mihomo
 $ mihoterm attach
 ```
 
 With no profile argument, MihoTerm selects `default`, selects the only existing
 profile, or starts guided first-run setup. With no `--mihomo` override, it uses
-an executable named `mihomo` beside itself before searching `PATH`.
+the executable beside MihoTerm before searching `PATH`.
 
-Managed mode is separate from attach mode. MihoTerm never adopts an existing
-process, matches processes by name, modifies a service, or changes the stored
-profile.
+Managed mode never adopts an existing process, matches processes by name,
+modifies a system service, or changes another Mihomo instance.
+
+## Lifecycle
+
+`mihoterm`, `run`, `start`, `shell`, and `exec` start the managed process if it
+does not already exist. A subsequent command reuses the same verified session.
+Requesting a different profile while one is active fails visibly; stop the
+current session before selecting another profile.
+
+Closing the TUI with `q` or `Ctrl-C` leaves the proxy running. This makes the
+TUI a control surface rather than the lifetime owner. `mihoterm stop` and
+`mihoterm uninstall` stop only the exact recorded process.
+
+The owner-only session descriptor records:
+
+- a random session identifier;
+- the PID and Linux `/proc` start-time value;
+- the exact per-run configuration path;
+- the active profile;
+- loopback controller and mixed ports; and
+- generated controller and mixed-proxy credentials.
+
+Before status, environment export, or stop, MihoTerm verifies the descriptor,
+PID start time, command line, and runtime path. A recycled PID or altered
+descriptor is rejected and never signaled.
 
 ## Startup sequence
 
 1. Resolve and verify the selected Mihomo executable.
 2. Create one mode `0700` per-run directory under the XDG runtime directory.
-3. Copy any regular, size-bounded bundled GeoIP/GeoSite files into the private
-   runtime home as mode `0600` files; symbolic links are rejected.
-4. Reserve two distinct ephemeral TCP ports on `127.0.0.1`.
+3. Copy regular, size-bounded bundled GeoIP/GeoSite files into the private
+   runtime home; symbolic links are rejected.
+4. Reserve distinct ephemeral TCP ports on `127.0.0.1`.
 5. Read the owner-only managed profile and derive a hardened runtime YAML.
-6. Generate a 256-bit controller secret from the operating system RNG.
-7. Write the YAML and log as mode `0600` files.
+6. Generate independent 256-bit controller and mixed-proxy credentials.
+7. Write configuration, logs, and the session descriptor as mode `0600` files.
 8. Run Mihomo `-t` against the exact derived YAML.
 9. Release the port reservations immediately before spawning Mihomo.
-10. Wait for the authenticated loopback controller to report its version.
-11. Open the TUI and show the mixed proxy endpoint in the header.
+10. Start Mihomo in a detached session and wait for the authenticated loopback
+    controller to report its version.
 
-The validation and live process both receive an empty inherited environment,
-a private home and temporary directory, and `umask 077`.
+The validation and live process receive a cleared environment, a private home
+and temporary directory, and `umask 077`.
 
 ## Forced runtime overrides
 
@@ -45,36 +69,57 @@ ordinary outbound behavior. It overrides inbound and system-changing settings:
 - `allow-lan` is false and `bind-address` is `127.0.0.1`;
 - HTTP, SOCKS, redirect, and TProxy ports are disabled;
 - one mixed proxy port and one controller port are dynamically allocated;
+- the mixed port requires a generated username and password;
 - TUN, iptables, NTP system writes, TUIC server, custom listeners, and tunnels
   are disabled;
 - alternate TLS, Unix-socket, and named-pipe controllers are disabled;
 - external UI downloads and the unauthenticated external DoH route are
-  disabled;
-- a new controller secret replaces any value in the stored profile.
+  disabled; and
+- generated controller credentials replace stored values.
 
 The source profile is never rewritten.
 
-## Shutdown behavior
+## Application integration
 
-`q`, `Ctrl-C`, SIGINT, SIGTERM, TUI errors, and ordinary unwinding stop and reap
-the exact child before removing its per-run directory. The internal wrapper
-also requests SIGTERM from the kernel if the MihoTerm parent disappears,
-including after SIGKILL. A non-catchable parent failure can leave its private
-per-run directory behind, but the Mihomo child still exits.
+`mihoterm env` prints shell commands for the active authenticated endpoint.
+The output includes uppercase and lowercase HTTP, HTTPS, and SOCKS variables,
+`NO_PROXY` for local destinations, and a MihoTerm session marker.
 
-The runtime root itself is retained as an empty mode `0700` directory. MihoTerm
-does not delete unknown directories or search for unrelated processes.
+```console
+$ eval "$(mihoterm env)"
+$ mihoterm exec -- curl https://example.com
+$ mihoterm shell
+```
+
+The installer-managed Bash integration performs the `env` synchronization
+after lifecycle commands and restores earlier proxy variables after stop.
+Credentials are not printed by normal status commands or stored in `.bashrc`.
+
+Environment variables affect applications that support them and are launched
+from that environment. They are not transparent packet capture. MihoTerm does
+not enable TUN or system-wide routing in the default mode.
+
+## Stop behavior
+
+Stop first sends SIGTERM to the verified PID and waits briefly. If the same
+verified process remains, it sends SIGKILL and waits again. It then removes
+only the recorded per-run directory and session descriptor. Unknown
+directories and unrelated processes are never searched or deleted.
+
+The runtime root itself remains as a mode `0700` directory. A stale descriptor
+whose process no longer matches is cleaned without signaling the new PID
+owner.
 
 ## Current limitations
 
-- Managed mode is intentionally Linux-only.
+- Managed mode is Linux-only.
 - Relative local provider and rule files are resolved inside the isolated
   runtime home. Use HTTP providers or absolute owner-controlled paths until
   resource import is implemented.
-- The dynamically allocated mixed proxy endpoint exists only while the TUI is
-  running.
-- Structural profile checks run before Mihomo, but Mihomo `-t` remains the
-  complete schema authority.
+- Updating the active subscription profile does not hot-reload the running
+  core. Stop and restart after a validated update.
+- Transparent TUN capture is intentionally not available in the rootless
+  default mode.
 
 The command-line behavior follows Mihomo's documented `-t`, `-d`, and `-f`
 flags and its public

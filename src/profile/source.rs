@@ -15,13 +15,19 @@ use super::ProfileError;
 pub(crate) const MAX_PROFILE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_URL_FILE_BYTES: u64 = 16 * 1024;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProfileSource {
     source: SourceKind,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileSourceSummary {
+    pub kind: &'static str,
+    pub display: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, tag = "type", rename_all = "kebab-case")]
 enum SourceKind {
     Https { url: String },
@@ -80,6 +86,22 @@ impl ProfileSource {
         }
     }
 
+    #[must_use]
+    pub fn summary(&self) -> ProfileSourceSummary {
+        let display = match &self.source {
+            SourceKind::Https { url } => Url::parse(url).map_or_else(
+                |_| "https://invalid/…".to_owned(),
+                |url| format!("{}/…", url.origin().ascii_serialization()),
+            ),
+            SourceKind::LocalFile { path } => sanitize_terminal_text(&path.to_string_lossy()),
+        };
+
+        ProfileSourceSummary {
+            kind: self.kind(),
+            display,
+        }
+    }
+
     pub(crate) fn descriptor(&self) -> Result<String, ProfileError> {
         toml::to_string(self).map_err(|_| ProfileError::Storage)
     }
@@ -135,6 +157,19 @@ fn validate_subscription_url(value: &str) -> Result<Url, ProfileError> {
         return Err(ProfileError::InvalidSubscriptionUrl);
     }
     Ok(url)
+}
+
+fn sanitize_terminal_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                '\u{fffd}'
+            } else {
+                character
+            }
+        })
+        .collect()
 }
 
 fn load_local(path: &Path) -> Result<Vec<u8>, ProfileError> {
@@ -205,6 +240,23 @@ mod tests {
 
         assert!(output.contains("[REDACTED]"));
         assert!(!output.contains("private"));
+    }
+
+    #[test]
+    fn url_summary_never_reveals_path_or_query_credentials() {
+        let source = ProfileSource::from_url(
+            "https://example.com/private/token?credential=secret"
+                .to_owned()
+                .into(),
+        )
+        .expect("URL should be valid");
+
+        let summary = source.summary();
+
+        assert_eq!(summary.kind, "https");
+        assert_eq!(summary.display, "https://example.com/…");
+        assert!(!summary.display.contains("private"));
+        assert!(!summary.display.contains("secret"));
     }
 
     #[test]

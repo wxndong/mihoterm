@@ -7,6 +7,27 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0-alpha.2] - 2026-07-27
+
+### Added
+
+- A persistent per-user Mihomo lifecycle with `start`, `stop`, `status`,
+  `env`, `shell`, and `exec` commands.
+- Generated authentication for the loopback mixed proxy, plus owner-only
+  session descriptors and PID-reuse-resistant stop behavior.
+- Reversible Bash integration that loads the active proxy in new shells and
+  restores pre-existing proxy variables after stop or uninstall.
+- A versioned user-local installer and safe uninstaller; profiles and
+  configuration are preserved unless `--purge` is requested.
+- TUI subscription management with arrow-key navigation, hidden URL input,
+  redacted source summaries, validated add/replace, and background update.
+- Installer lifecycle coverage in the local CI entry point.
+
+### Changed
+
+- Closing the TUI no longer stops the managed proxy.
+- Portable archives now include `install.sh` and the Bash integration hook.
+
 ## [0.1.0-alpha.1] - 2026-07-26
 
 ### Added
@@ -51,5 +72,6 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Request Mihomo-compatible YAML from subscription services that select their
   response format from the client identifier.
 
-[Unreleased]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.1...HEAD
+[Unreleased]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.2...HEAD
+[0.1.0-alpha.2]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/wxndong/mihoterm/releases/tag/v0.1.0-alpha.1

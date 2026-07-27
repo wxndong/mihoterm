@@ -1,8 +1,8 @@
-use std::path::PathBuf;
+use std::{ffi::OsString, path::PathBuf};
 
 use clap::{Parser, Subcommand};
 
-const DEFAULT_CONTROLLER: &str = "http://127.0.0.1:9090";
+pub const DEFAULT_CONTROLLER: &str = "http://127.0.0.1:9090";
 
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -24,13 +24,8 @@ pub struct Cli {
     pub runtime_dir: Option<PathBuf>,
 
     /// Mihomo external-controller URL.
-    #[arg(
-        long,
-        env = "MIHOTERM_CONTROLLER",
-        default_value = DEFAULT_CONTROLLER,
-        value_name = "URL"
-    )]
-    pub controller: String,
+    #[arg(long, env = "MIHOTERM_CONTROLLER", value_name = "URL")]
+    pub controller: Option<String>,
 
     /// File containing the Mihomo controller secret.
     #[arg(
@@ -71,6 +66,59 @@ pub enum Command {
     /// Print a sanitized one-line controller status without opening the TUI.
     Status,
 
+    /// Start or reuse the background managed proxy without opening the TUI.
+    Start {
+        /// Managed profile identifier; auto-select or guide setup when omitted.
+        profile: Option<String>,
+
+        /// Mihomo executable name or path.
+        #[arg(long, env = "MIHOTERM_MIHOMO", value_name = "PATH")]
+        mihomo: Option<PathBuf>,
+    },
+
+    /// Stop only the background managed proxy owned by MihoTerm.
+    Stop,
+
+    /// Print shell commands for the active managed proxy environment.
+    Env {
+        /// Return a safe cleanup script instead of an error when no session is active.
+        #[arg(long)]
+        if_running: bool,
+    },
+
+    /// Open an interactive shell whose child processes use the managed proxy.
+    Shell {
+        /// Managed profile identifier; auto-select or guide setup when omitted.
+        #[arg(long)]
+        profile: Option<String>,
+
+        /// Mihomo executable name or path.
+        #[arg(long, env = "MIHOTERM_MIHOMO", value_name = "PATH")]
+        mihomo: Option<PathBuf>,
+    },
+
+    /// Run one command with the managed proxy environment.
+    Exec {
+        /// Managed profile identifier; auto-select or guide setup when omitted.
+        #[arg(long)]
+        profile: Option<String>,
+
+        /// Mihomo executable name or path.
+        #[arg(long, env = "MIHOTERM_MIHOMO", value_name = "PATH")]
+        mihomo: Option<PathBuf>,
+
+        /// Command and arguments, specified after `--`.
+        #[arg(last = true, required = true, num_args = 1..)]
+        command: Vec<OsString>,
+    },
+
+    /// Remove the user-local installation and shell integration.
+    Uninstall {
+        /// Also remove user configuration, profiles, and runtime state.
+        #[arg(long)]
+        purge: bool,
+    },
+
     /// Manage validated Mihomo profiles without changing a running instance.
     Profile {
         #[command(subcommand)]
@@ -103,6 +151,24 @@ pub enum Command {
 
         #[arg(long, hide = true)]
         test: bool,
+
+        #[arg(long, hide = true)]
+        detached: bool,
+    },
+
+    #[command(name = "__session-start", hide = true)]
+    SessionStart {
+        #[arg(long, hide = true)]
+        profile: String,
+
+        #[arg(long, hide = true)]
+        profile_path: PathBuf,
+
+        #[arg(long, hide = true)]
+        mihomo: PathBuf,
+
+        #[arg(long, hide = true)]
+        runtime_root: PathBuf,
     },
 }
 
@@ -153,13 +219,13 @@ pub enum ProfileCommand {
 mod tests {
     use clap::Parser;
 
-    use super::{Cli, Command, DEFAULT_CONTROLLER, ProfileCommand};
+    use super::{Cli, Command, ProfileCommand};
 
     #[test]
     fn no_subcommand_selects_guided_managed_mode() {
         let cli = Cli::try_parse_from(["mihoterm"]).expect("defaults should parse");
 
-        assert_eq!(cli.controller, DEFAULT_CONTROLLER);
+        assert!(cli.controller.is_none());
         assert!(cli.command.is_none());
     }
 
@@ -181,6 +247,7 @@ mod tests {
         .expect("status should parse");
 
         assert!(matches!(cli.command, Some(Command::Status)));
+        assert_eq!(cli.controller.as_deref(), Some("http://127.0.0.1:19090"));
         assert_eq!(cli.timeout_ms, 5_000);
     }
 
@@ -266,6 +333,34 @@ mod tests {
                 profile: None,
                 mihomo: None
             })
+        ));
+    }
+
+    #[test]
+    fn parses_background_lifecycle_and_proxied_command() {
+        let start =
+            Cli::try_parse_from(["mihoterm", "start", "primary"]).expect("start should parse");
+        let command = Cli::try_parse_from([
+            "mihoterm",
+            "exec",
+            "--profile",
+            "primary",
+            "--",
+            "curl",
+            "https://example.com",
+        ])
+        .expect("exec should parse");
+
+        assert!(matches!(
+            start.command,
+            Some(Command::Start {
+                profile: Some(profile),
+                ..
+            }) if profile == "primary"
+        ));
+        assert!(matches!(
+            command.command,
+            Some(Command::Exec { command, .. }) if command.len() == 2
         ));
     }
 }

@@ -10,7 +10,10 @@ use std::{
 use fs4::{FileExt, TryLockError};
 use reqwest::{Client, redirect::Policy};
 
-use super::{ProfileError, ProfileSource, source::MAX_PROFILE_BYTES, validate::validate_profile};
+use super::{
+    ProfileError, ProfileSource, ProfileSourceSummary, source::MAX_PROFILE_BYTES,
+    validate::validate_profile,
+};
 
 const PROFILE_FILE: &str = "profile.yaml";
 const BACKUP_FILE: &str = "profile.previous.yaml";
@@ -22,6 +25,7 @@ const MAX_DESCRIPTOR_BYTES: u64 = 64 * 1024;
 const SUBSCRIPTION_USER_AGENT: &str = "clash.meta";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Clone)]
 pub struct ProfileStore {
     root: PathBuf,
     client: Client,
@@ -31,6 +35,7 @@ pub struct ProfileStore {
 pub struct ProfileSummary {
     pub id: String,
     pub has_backup: bool,
+    pub source: ProfileSourceSummary,
 }
 
 impl ProfileStore {
@@ -93,6 +98,19 @@ impl ProfileStore {
         replace_with_backup(&directory, &contents)
     }
 
+    pub async fn replace_source(
+        &self,
+        id: &str,
+        source: ProfileSource,
+    ) -> Result<(), ProfileError> {
+        validate_id(id)?;
+        let contents = source.load(&self.client).await?;
+        validate_profile(&contents)?;
+        let _lock = acquire_lock(&self.root)?;
+        let directory = self.existing_profile_dir(id)?;
+        replace_source_with_backup(&directory, &source, &contents)
+    }
+
     pub fn rollback(&self, id: &str) -> Result<(), ProfileError> {
         validate_id(id)?;
         let _lock = acquire_lock(&self.root)?;
@@ -114,23 +132,28 @@ impl ProfileStore {
         if !self.root.exists() {
             return Ok(Vec::new());
         }
-        let mut profiles = fs::read_dir(&self.root)
-            .map_err(|_| ProfileError::Storage)?
-            .filter_map(Result::ok)
-            .filter_map(|entry| {
-                let id = entry.file_name().into_string().ok()?;
-                if validate_id(&id).is_err() || !entry.path().is_dir() {
-                    return None;
-                }
-                let path = entry.path();
-                (path.join(PROFILE_FILE).is_file() && path.join(SOURCE_FILE).is_file()).then_some(
-                    ProfileSummary {
-                        id,
-                        has_backup: path.join(BACKUP_FILE).is_file(),
-                    },
-                )
-            })
-            .collect::<Vec<_>>();
+        let mut profiles = Vec::new();
+        for entry in fs::read_dir(&self.root).map_err(|_| ProfileError::Storage)? {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let Ok(id) = entry.file_name().into_string() else {
+                continue;
+            };
+            let path = entry.path();
+            if validate_id(&id).is_err()
+                || !path.is_dir()
+                || !path.join(PROFILE_FILE).is_file()
+                || !path.join(SOURCE_FILE).is_file()
+            {
+                continue;
+            }
+            profiles.push(ProfileSummary {
+                id,
+                has_backup: path.join(BACKUP_FILE).is_file(),
+                source: read_source(&path)?.summary(),
+            });
+        }
         profiles.sort_by(|left, right| left.id.cmp(&right.id));
         Ok(profiles)
     }
@@ -266,6 +289,37 @@ fn replace_with_backup(directory: &Path, contents: &[u8]) -> Result<(), ProfileE
     sync_directory(directory)
 }
 
+fn replace_source_with_backup(
+    directory: &Path,
+    source: &ProfileSource,
+    contents: &[u8],
+) -> Result<(), ProfileError> {
+    let source_path = directory.join(SOURCE_FILE);
+    let current_path = directory.join(PROFILE_FILE);
+    let backup_path = directory.join(BACKUP_FILE);
+    let current = read_bounded(&current_path, MAX_PROFILE_BYTES as u64)?;
+    let source_temp = write_temporary(directory, "source", source.descriptor()?.as_bytes())?;
+    let next_temp = write_temporary(directory, "profile", contents)?;
+    let backup_temp = write_temporary(directory, "backup", &current)?;
+
+    if fs::rename(&backup_temp, &backup_path).is_err() {
+        let _ = fs::remove_file(&source_temp);
+        let _ = fs::remove_file(&next_temp);
+        let _ = fs::remove_file(&backup_temp);
+        return Err(ProfileError::Storage);
+    }
+    if fs::rename(&source_temp, &source_path).is_err() {
+        let _ = fs::remove_file(&source_temp);
+        let _ = fs::remove_file(&next_temp);
+        return Err(ProfileError::Storage);
+    }
+    if fs::rename(&next_temp, &current_path).is_err() {
+        let _ = fs::remove_file(&next_temp);
+        return Err(ProfileError::Storage);
+    }
+    sync_directory(directory)
+}
+
 fn swap_files(directory: &Path, current: &[u8], backup: &[u8]) -> Result<(), ProfileError> {
     let current_path = directory.join(PROFILE_FILE);
     let backup_path = directory.join(BACKUP_FILE);
@@ -390,6 +444,59 @@ mod tests {
 
         assert_eq!(result, Err(ProfileError::InvalidYamlRoot));
         assert!(!base.join("state/profiles/invalid").exists());
+        fs::remove_dir_all(base).expect("test directory should be removed");
+    }
+
+    #[tokio::test]
+    async fn replacing_a_source_validates_before_changing_stored_files() {
+        let base = temporary_directory();
+        fs::create_dir(&base).expect("base should be created");
+        let original_path = base.join("original.yaml");
+        let invalid_path = base.join("invalid.yaml");
+        let replacement_path = base.join("replacement.yaml");
+        fs::write(&original_path, fixture("Proxy A")).expect("original should be written");
+        fs::write(&invalid_path, "<html>invalid</html>").expect("invalid source should be written");
+        fs::write(&replacement_path, fixture("Proxy B")).expect("replacement should be written");
+        let store =
+            ProfileStore::new(base.join("state/profiles")).expect("store should initialize");
+        store
+            .add(
+                "primary",
+                ProfileSource::from_local_file(&original_path)
+                    .expect("original source should initialize"),
+            )
+            .await
+            .expect("profile should be added");
+        let profile_path = store.profile_path("primary").expect("profile should exist");
+
+        let invalid = ProfileSource::from_local_file(&invalid_path)
+            .expect("invalid source path should initialize");
+        assert_eq!(
+            store.replace_source("primary", invalid).await,
+            Err(ProfileError::InvalidYamlRoot)
+        );
+        assert!(
+            fs::read_to_string(&profile_path)
+                .expect("profile should remain readable")
+                .contains("Proxy A")
+        );
+
+        let replacement = ProfileSource::from_local_file(&replacement_path)
+            .expect("replacement source should initialize");
+        store
+            .replace_source("primary", replacement)
+            .await
+            .expect("replacement should succeed");
+        assert!(
+            fs::read_to_string(&profile_path)
+                .expect("profile should be readable")
+                .contains("Proxy B")
+        );
+        assert_eq!(
+            store.list().expect("list should work")[0].source.display,
+            replacement_path.to_string_lossy()
+        );
+
         fs::remove_dir_all(base).expect("test directory should be removed");
     }
 

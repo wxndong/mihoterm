@@ -7,6 +7,8 @@ pub(super) fn build_managed_config(
     controller_port: u16,
     mixed_port: u16,
     secret: &str,
+    proxy_username: &str,
+    proxy_password: &str,
 ) -> Result<Vec<u8>, RuntimeError> {
     std::str::from_utf8(profile).map_err(|_| RuntimeError::InvalidProfile)?;
     let mut value: Value =
@@ -28,7 +30,11 @@ pub(super) fn build_managed_config(
     set_number(root, "mixed-port", u64::from(mixed_port));
     set_bool(root, "allow-lan", false);
     set_string(root, "bind-address", "127.0.0.1");
-    set_sequence(root, "authentication", Vec::new());
+    set_sequence(
+        root,
+        "authentication",
+        vec![Value::String(format!("{proxy_username}:{proxy_password}"))],
+    );
 
     set_string(
         root,
@@ -140,8 +146,15 @@ proxies:
     type: direct
 "#;
 
-        let output = build_managed_config(input, 41001, 41002, "new-secret")
-            .expect("configuration should be derived");
+        let output = build_managed_config(
+            input,
+            41001,
+            41002,
+            "new-secret",
+            "mihoterm-user",
+            "proxy-password",
+        )
+        .expect("configuration should be derived");
         let value: Value = yaml_serde::from_slice(&output).expect("output should be YAML");
 
         assert_eq!(value["mixed-port"].as_u64(), Some(41002));
@@ -151,6 +164,10 @@ proxies:
         assert_eq!(value["tproxy-port"].as_u64(), Some(0));
         assert_eq!(value["allow-lan"].as_bool(), Some(false));
         assert_eq!(value["bind-address"].as_str(), Some("127.0.0.1"));
+        assert_eq!(
+            value["authentication"][0].as_str(),
+            Some("mihoterm-user:proxy-password")
+        );
         assert_eq!(
             value["external-controller"].as_str(),
             Some("127.0.0.1:41001")
@@ -172,7 +189,14 @@ proxies:
 
     #[test]
     fn runtime_configuration_requires_proxy_content() {
-        let result = build_managed_config(b"mode: rule\nrules: []\n", 41001, 41002, "secret");
+        let result = build_managed_config(
+            b"mode: rule\nrules: []\n",
+            41001,
+            41002,
+            "secret",
+            "user",
+            "password",
+        );
 
         assert!(result.is_err());
     }

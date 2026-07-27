@@ -48,6 +48,8 @@ bundle_dir="$(find "$verification_dir" -mindepth 1 -maxdepth 1 -type d -print -q
 for required in \
   "$bundle_dir/mihoterm" \
   "$bundle_dir/mihomo" \
+  "$bundle_dir/install.sh" \
+  "$bundle_dir/shell/mihoterm.sh" \
   "$bundle_dir/LICENSE" \
   "$bundle_dir/THIRD_PARTY_NOTICES.md" \
   "$bundle_dir/THIRD-PARTY-LICENSES.html" \
@@ -70,6 +72,25 @@ for executable in "$bundle_dir/mihoterm" "$bundle_dir/mihomo"; do
     exit 1
   fi
 done
+
+install_home="$verification_dir/install-home"
+install -d -m 0700 \
+  "$install_home" \
+  "$install_home/runtime"
+env \
+  HOME="$install_home" \
+  XDG_DATA_HOME="$install_home/data" \
+  XDG_CONFIG_HOME="$install_home/config" \
+  XDG_STATE_HOME="$install_home/state" \
+  XDG_RUNTIME_DIR="$install_home/runtime" \
+  "$bundle_dir/install.sh" --no-shell
+env \
+  HOME="$install_home" \
+  XDG_DATA_HOME="$install_home/data" \
+  XDG_CONFIG_HOME="$install_home/config" \
+  XDG_STATE_HOME="$install_home/state" \
+  XDG_RUNTIME_DIR="$install_home/runtime" \
+  "$install_home/.local/bin/mihoterm" uninstall
 
 while IFS=$'\t' read -r geodata_asset geodata_sha256; do
   if [[ -z "$geodata_asset" || "$geodata_asset" == \#* ]]; then

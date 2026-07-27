@@ -73,4 +73,25 @@ pub enum RuntimeError {
 
     #[error("failed to clean the private runtime directory")]
     RuntimeCleanup,
+
+    #[error("failed to lock the managed proxy session")]
+    SessionLock,
+
+    #[error("failed to read the managed proxy session")]
+    SessionRead,
+
+    #[error("the managed proxy session descriptor is invalid")]
+    InvalidSession,
+
+    #[error("failed to write the managed proxy session")]
+    SessionWrite,
+
+    #[error("a different managed profile is already running; stop it before switching profiles")]
+    SessionProfileConflict,
+
+    #[error("no managed proxy session is running")]
+    SessionNotRunning,
+
+    #[error("failed to stop the managed proxy session")]
+    SessionStop,
 }

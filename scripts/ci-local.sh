@@ -11,6 +11,7 @@ cargo clippy --all-targets --all-features --locked -- -D warnings
 cargo test --all-targets --all-features --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --locked
 cargo build --release --locked
+./scripts/test-installer.sh
 git diff --check
 
 if command -v gitleaks >/dev/null 2>&1; then
