@@ -28,6 +28,11 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Closing the TUI no longer stops the managed proxy.
 - Portable archives now include `install.sh` and the Bash integration hook.
 
+### Fixed
+
+- Wrap status messages and context-sensitive controls in narrow terminals
+  instead of silently truncating them.
+
 ## [0.1.0-alpha.1] - 2026-07-26
 
 ### Added
