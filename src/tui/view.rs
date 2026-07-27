@@ -22,13 +22,28 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         return;
     }
 
+    let footer_lines = footer_lines(app, area.width.saturating_sub(2));
+    let desired_footer_height = u16::try_from(footer_lines.len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(2);
+    let footer_height = desired_footer_height.min(area.height.saturating_sub(1));
+    let remaining_height = area.height.saturating_sub(footer_height);
+    let header_height = if remaining_height >= 7 {
+        3
+    } else if remaining_height >= 2 {
+        1
+    } else {
+        0
+    };
     let vertical = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Min(4),
-        Constraint::Length(3),
+        Constraint::Length(header_height),
+        Constraint::Min(1),
+        Constraint::Length(footer_height),
     ])
     .split(area);
-    render_header(frame, vertical[0], app);
+    if header_height > 0 {
+        render_header(frame, vertical[0], app);
+    }
 
     match app.page {
         Page::Dashboard => {
@@ -40,7 +55,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         }
         Page::Profiles => render_profiles(frame, vertical[1], app),
     }
-    render_footer(frame, vertical[2], app);
+    render_footer(frame, vertical[2], footer_lines);
 }
 
 fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -59,10 +74,12 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
             app.controller
         )),
     ]);
-    frame.render_widget(
-        Paragraph::new(line).block(Block::bordered().title(" Status ")),
-        area,
-    );
+    let paragraph = Paragraph::new(line);
+    if area.height >= 3 {
+        frame.render_widget(paragraph.block(Block::bordered().title(" Status ")), area);
+    } else {
+        frame.render_widget(paragraph, area);
+    }
 }
 
 fn render_groups(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -195,41 +212,168 @@ fn render_profiles(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
-fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
+fn render_footer(frame: &mut Frame<'_>, area: Rect, lines: Vec<Line<'static>>) {
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::bordered().title(" Controls ")),
+        area,
+    );
+}
+
+fn footer_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let status_style = match app.status.kind {
         StatusKind::Info => Style::default().fg(Color::Yellow),
         StatusKind::Ready => Style::default().fg(Color::Green),
         StatusKind::Error => Style::default().fg(Color::Red),
     };
-    let help = match app.input_mode {
-        InputMode::Search => format!("/{}  Enter keep  Esc clear", app.search),
-        InputMode::Confirm => "y/Enter confirm  n/Esc cancel".into(),
-        InputMode::ProfileId => format!(
-            "Profile ID: {}  Enter next  Ctrl-U clear  Esc cancel",
-            app.profile_id_input()
-        ),
-        InputMode::SubscriptionUrl => format!(
-            "Subscription URL: hidden ({} chars)  Enter save  Ctrl-U clear  Esc cancel",
-            app.subscription_input_len()
-        ),
-        InputMode::Normal if app.page == Page::Profiles => {
-            "Up/Down choose  a add  e replace URL  u update  s/Esc back  q quit".into()
-        }
-        InputMode::Normal => format!(
-            "Arrows move/focus  Enter select  m mode  d probe [{}]  p target  / search  r refresh  s sources  q quit",
-            app.current_probe().name()
-        ),
+    let controls = match app.input_mode {
+        InputMode::Search => vec![
+            format!("/{}", app.search),
+            "Enter keep".into(),
+            "Esc clear".into(),
+        ],
+        InputMode::Confirm => vec!["y/Enter confirm".into(), "n/Esc cancel".into()],
+        InputMode::ProfileId => vec![
+            format!("Profile ID: {}", app.profile_id_input()),
+            "Enter next".into(),
+            "Ctrl-U clear".into(),
+            "Esc cancel".into(),
+        ],
+        InputMode::SubscriptionUrl => vec![
+            format!(
+                "Subscription URL: hidden ({} chars)",
+                app.subscription_input_len()
+            ),
+            "Enter save".into(),
+            "Ctrl-U clear".into(),
+            "Esc cancel".into(),
+        ],
+        InputMode::Normal if app.page == Page::Profiles => vec![
+            "Up/Down choose".into(),
+            "a add".into(),
+            "e replace URL".into(),
+            "u update".into(),
+            "s/Esc back".into(),
+            "q quit".into(),
+        ],
+        InputMode::Normal => vec![
+            "Arrows move/focus".into(),
+            "Enter select".into(),
+            "m mode".into(),
+            format!("d probe [{}]", app.current_probe().name()),
+            "p target".into(),
+            "/ search".into(),
+            "r refresh".into(),
+            "s sources".into(),
+            "q quit".into(),
+        ],
     };
-    let line = Line::from(vec![
-        Span::styled(&app.status.message, status_style),
-        Span::raw("  |  "),
-        Span::raw(help),
-    ]);
 
-    frame.render_widget(
-        Paragraph::new(line).block(Block::bordered().title(" Controls ")),
-        area,
-    );
+    let mut lines = wrap_text(&app.status.message, width)
+        .into_iter()
+        .map(|line| Line::styled(line, status_style))
+        .collect::<Vec<_>>();
+    lines.extend(wrap_chunks(&controls, width).into_iter().map(Line::from));
+    lines
+}
+
+fn wrap_chunks(chunks: &[String], width: u16) -> Vec<String> {
+    let width = usize::from(width.max(1));
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0;
+
+    for chunk in chunks.iter().filter(|chunk| !chunk.is_empty()) {
+        let chunk_width = display_width(chunk);
+        if chunk_width > width {
+            if !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+                current_width = 0;
+            }
+            let mut wrapped = wrap_text(chunk, u16::try_from(width).unwrap_or(u16::MAX));
+            if let Some(last) = wrapped.pop() {
+                lines.extend(wrapped);
+                current_width = display_width(&last);
+                current = last;
+            }
+            continue;
+        }
+
+        let separator_width = usize::from(!current.is_empty()) * 2;
+        if current_width + separator_width + chunk_width <= width {
+            if !current.is_empty() {
+                current.push_str("  ");
+            }
+            current.push_str(chunk);
+            current_width += separator_width + chunk_width;
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current.push_str(chunk);
+            current_width = chunk_width;
+        }
+    }
+
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+fn wrap_text(text: &str, width: u16) -> Vec<String> {
+    let width = usize::from(width.max(1));
+    let mut lines = Vec::new();
+
+    for logical_line in text.split('\n') {
+        let mut current = String::new();
+        let mut current_width = 0;
+
+        for word in logical_line.split_whitespace() {
+            let word_width = display_width(word);
+            let separator_width = usize::from(!current.is_empty());
+            if word_width <= width && current_width + separator_width + word_width <= width {
+                if !current.is_empty() {
+                    current.push(' ');
+                }
+                current.push_str(word);
+                current_width += separator_width + word_width;
+                continue;
+            }
+
+            if !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+                current_width = 0;
+            }
+            if word_width <= width {
+                current.push_str(word);
+                current_width = word_width;
+                continue;
+            }
+
+            for character in word.chars() {
+                let character_width = display_width(&character.to_string());
+                if current_width + character_width > width && !current.is_empty() {
+                    lines.push(std::mem::take(&mut current));
+                    current_width = 0;
+                }
+                current.push(character);
+                current_width += character_width;
+            }
+        }
+
+        if !current.is_empty() {
+            lines.push(current);
+        } else if logical_line.is_empty() {
+            lines.push(String::new());
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+fn display_width(text: &str) -> usize {
+    Line::from(text).width()
 }
 
 fn pane_block<'a>(title: &'a str, focused: bool) -> Block<'a> {
@@ -245,9 +389,9 @@ fn pane_block<'a>(title: &'a str, focused: bool) -> Block<'a> {
 mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
-    use super::render;
+    use super::{MIN_HEIGHT, MIN_WIDTH, render};
     use crate::{
-        app::{App, Input, PolicyGroup, ProxyRow, Snapshot},
+        app::{App, Input, PolicyGroup, ProxyRow, Snapshot, StatusKind},
         profile::{ProfileSourceSummary, ProfileSummary},
     };
 
@@ -323,6 +467,76 @@ mod tests {
 
         assert!(text.contains("https://example.com/"));
         assert!(text.contains("hidden ("));
+        assert!(!text.contains("private"));
+        assert!(!text.contains("never-render"));
+    }
+
+    #[test]
+    fn minimum_terminal_wraps_status_and_keeps_every_control_visible() {
+        let mut app = App::new("http://127.0.0.1:9090".into());
+        app.status.kind = StatusKind::Ready;
+        app.status.message =
+            "GitHub: a deliberately long proxy name responded successfully in 55 ms".into();
+        let backend = TestBackend::new(MIN_WIDTH, MIN_HEIGHT);
+        let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+
+        terminal
+            .draw(|frame| render(frame, &app))
+            .expect("minimum terminal should render");
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(text.contains("GitHub:"));
+        assert!(text.contains("55 ms"));
+        assert!(text.contains("Arrows move/focus"));
+        assert!(text.contains("d probe [Google]"));
+        assert!(text.contains("s sources"));
+        assert!(text.contains("q quit"));
+    }
+
+    #[test]
+    fn minimum_terminal_keeps_hidden_subscription_prompt_controls_visible() {
+        let mut app = App::with_managed_profiles(
+            "managed".into(),
+            Vec::new(),
+            "default".into(),
+            vec![ProfileSummary {
+                id: "default".into(),
+                has_backup: false,
+                source: ProfileSourceSummary {
+                    kind: "https",
+                    display: "https://example.com/…".into(),
+                },
+            }],
+        );
+        app.handle_input(Input::Character('s'));
+        app.handle_input(Input::Character('e'));
+        app.handle_input(Input::Paste(
+            "https://example.com/private?token=never-render".into(),
+        ));
+        let backend = TestBackend::new(MIN_WIDTH, MIN_HEIGHT);
+        let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+
+        terminal
+            .draw(|frame| render(frame, &app))
+            .expect("minimum terminal should render");
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(text.contains("hidden ("));
+        assert!(text.contains("Enter save"));
+        assert!(text.contains("Ctrl-U clear"));
+        assert!(text.contains("Esc cancel"));
         assert!(!text.contains("private"));
         assert!(!text.contains("never-render"));
     }
