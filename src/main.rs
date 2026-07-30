@@ -10,12 +10,14 @@ use std::{
 };
 
 use clap::Parser;
+use futures_util::{StreamExt, stream};
 use mihoterm::{
     app::{App, fetch_snapshot},
     cli::{Cli, Command, DEFAULT_CONTROLLER, ProfileCommand},
     config::{AppPaths, load_controller_secret, load_probe_targets},
     mihomo::ApiClient,
     onboarding,
+    probe::{ProbeTarget, select_probe_targets},
     profile::{ProfileSource, ProfileStore},
     runtime::{
         ManagedSession, RuntimeError, SessionManager, default_mihomo_executable,
@@ -221,6 +223,21 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             );
             Ok(())
         }
+        Some(Command::Probe { proxy, targets }) => {
+            let probes = load_probe_targets(paths.config_file(), config_is_explicit)?;
+            let probes = select_probe_targets(&probes, &targets)?;
+            let request_timeout = Duration::from_millis(timeout_ms);
+            let client = if let Some(controller) = controller.as_deref() {
+                let secret = load_controller_secret(secret_file.as_deref())?;
+                ApiClient::with_timeout(controller, secret, request_timeout)?
+            } else {
+                let manager = SessionManager::new(paths.runtime_dir())?;
+                let session = manager.active()?.ok_or(RuntimeError::SessionNotRunning)?;
+                session.api_client(request_timeout)?
+            };
+
+            run_probe_command(&client, &proxy, probes).await
+        }
         Some(Command::Attach) => {
             let secret = load_controller_secret(secret_file.as_deref())?;
             let client = ApiClient::with_timeout(
@@ -326,6 +343,50 @@ async fn run_session_tui(
     let app = App::with_managed_profiles(display, probes, active_profile, profiles);
     tui::run(client, app, refresh_interval, Some(store)).await?;
     Ok(())
+}
+
+async fn run_probe_command(
+    client: &ApiClient,
+    proxy: &str,
+    probes: Vec<ProbeTarget>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    const MAX_CONCURRENT_PROBES: usize = 4;
+
+    let mut results = stream::iter(probes.into_iter().enumerate().map(|(index, target)| {
+        let client = client.clone();
+        async move {
+            let result = client.probe_delay(proxy, &target).await;
+            (index, target, result)
+        }
+    }))
+    .buffer_unordered(MAX_CONCURRENT_PROBES)
+    .collect::<Vec<_>>()
+    .await;
+    results.sort_by_key(|(index, _, _)| *index);
+
+    let total = results.len();
+    let mut failures = 0;
+    for (_, target, result) in results {
+        match result {
+            Ok(response) => {
+                println!(
+                    "{}: {proxy} responded in {} ms",
+                    target.name(),
+                    response.delay
+                );
+            }
+            Err(error) => {
+                failures += 1;
+                println!("{}: {proxy} failed: {error}", target.name());
+            }
+        }
+    }
+
+    if failures == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("{failures} of {total} probes failed")).into())
+    }
 }
 
 fn run_proxy_shell(session: &ManagedSession) -> Result<(), Box<dyn std::error::Error>> {

@@ -66,6 +66,17 @@ pub enum Command {
     /// Print a sanitized one-line controller status without opening the TUI.
     Status,
 
+    /// Probe configured HTTPS targets through one Mihomo proxy.
+    Probe {
+        /// Mihomo proxy or policy-group name to probe without changing selection.
+        #[arg(long, value_name = "NAME")]
+        proxy: String,
+
+        /// Probe target name; repeat to select several (defaults to all).
+        #[arg(long = "target", value_name = "NAME")]
+        targets: Vec<String>,
+    },
+
     /// Start or reuse the background managed proxy without opening the TUI.
     Start {
         /// Managed profile identifier; auto-select or guide setup when omitted.
@@ -249,6 +260,38 @@ mod tests {
         assert!(matches!(cli.command, Some(Command::Status)));
         assert_eq!(cli.controller.as_deref(), Some("http://127.0.0.1:19090"));
         assert_eq!(cli.timeout_ms, 5_000);
+    }
+
+    #[test]
+    fn parses_the_headless_probe_command() {
+        let cli = Cli::try_parse_from([
+            "mihoterm",
+            "--controller",
+            "http://127.0.0.1:19090",
+            "probe",
+            "--proxy",
+            "Proxy A",
+            "--target",
+            "Google",
+            "--target",
+            "openai",
+        ])
+        .expect("probe should parse");
+
+        assert!(matches!(
+            cli.command,
+            Some(Command::Probe {
+                proxy,
+                targets
+            }) if proxy == "Proxy A" && targets == ["Google", "openai"]
+        ));
+    }
+
+    #[test]
+    fn probe_requires_an_explicit_proxy() {
+        let result = Cli::try_parse_from(["mihoterm", "probe"]);
+
+        assert!(result.is_err());
     }
 
     #[test]
