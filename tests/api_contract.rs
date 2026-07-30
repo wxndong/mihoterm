@@ -1,12 +1,18 @@
 mod support;
 
-use std::process::Command;
+use std::{
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::PathBuf,
+    process::Command,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use mihoterm::{
     mihomo::{ApiClient, ApiError, OperatingMode},
     probe::ProbeTarget,
 };
-use support::{spawn_json_once, spawn_snapshot_server};
+use support::{spawn_json_once, spawn_scripted_json_server, spawn_snapshot_server};
 use url::Url;
 
 #[tokio::test]
@@ -187,4 +193,87 @@ async fn probe_request_preserves_target_and_expected_status() {
     );
     assert_eq!(result.delay, 47);
     assert_eq!(result.mean_delay, Some(51));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn probe_command_reports_every_target_and_fails_after_partial_reachability() {
+    let (controller, requests) = spawn_scripted_json_server(vec![
+        ("generate_204", "200 OK", r#"{"delay":21,"meanDelay":22}"#),
+        ("api.openai.com", "504 Gateway Timeout", ""),
+        ("github.com", "200 OK", r#"{"delay":33}"#),
+    ])
+    .await;
+    let base = temporary_directory();
+    let config = base.join("config.toml");
+    let state = base.join("state");
+    let runtime = base.join("runtime");
+    fs::create_dir(&base).expect("test directory should be created");
+    fs::write(&config, "").expect("config should be written");
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o600))
+        .expect("config permissions should be set");
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(env!("CARGO_BIN_EXE_mihoterm"))
+            .arg("--config")
+            .arg(config)
+            .arg("--state-dir")
+            .arg(state)
+            .arg("--runtime-dir")
+            .arg(runtime)
+            .args(["--controller", &controller, "probe", "--proxy", "Proxy A"])
+            .output()
+            .expect("probe binary should run")
+    })
+    .await
+    .expect("probe task should finish");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("stdout should be UTF-8"),
+        concat!(
+            "Google: Proxy A responded in 21 ms\n",
+            "OpenAI / Codex: Proxy A failed: probe proxy returned HTTP 504\n",
+            "GitHub: Proxy A responded in 33 ms\n"
+        )
+    );
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("stderr should be UTF-8"),
+        "mihoterm: 1 of 3 probes failed\n"
+    );
+
+    let requests = requests.await.expect("mock should capture all requests");
+    assert_eq!(requests.len(), 3);
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.starts_with("GET /api/proxies/Proxy%20A/delay?"))
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.contains("expected=204"))
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.contains("expected=401"))
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.contains("expected=200"))
+    );
+
+    fs::remove_dir_all(base).expect("test directory should be removed");
+}
+
+fn temporary_directory() -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should follow the Unix epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "mihoterm-probe-cli-test-{}-{nonce}",
+        std::process::id()
+    ))
 }

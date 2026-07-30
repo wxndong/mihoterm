@@ -7,6 +7,12 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- A headless `probe` command for running built-in or configured targets through
+  an explicitly named Mihomo proxy, with per-target output and aggregate exit
+  status.
+
 ## [0.1.0-alpha.2] - 2026-07-27
 
 ### Added

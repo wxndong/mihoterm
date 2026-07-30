@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{collections::BTreeSet, fmt};
 
 use thiserror::Error;
 use url::Url;
@@ -95,6 +95,52 @@ impl fmt::Debug for ProbeTarget {
     }
 }
 
+pub fn select_probe_targets(
+    targets: &[ProbeTarget],
+    selectors: &[String],
+) -> Result<Vec<ProbeTarget>, ProbeSelectionError> {
+    if selectors.is_empty() {
+        return Ok(targets.to_vec());
+    }
+
+    let mut selected = Vec::with_capacity(selectors.len());
+    let mut selected_names = BTreeSet::new();
+    for selector in selectors {
+        let target = targets
+            .iter()
+            .find(|target| target.name().eq_ignore_ascii_case(selector.trim()))
+            .or_else(|| {
+                built_in_alias(selector).and_then(|name| {
+                    targets
+                        .iter()
+                        .find(|target| target.name().eq_ignore_ascii_case(name))
+                })
+            })
+            .ok_or_else(|| ProbeSelectionError::UnknownTarget {
+                selector: selector.clone(),
+            })?;
+
+        if selected_names.insert(target.name().to_lowercase()) {
+            selected.push(target.clone());
+        }
+    }
+
+    Ok(selected)
+}
+
+fn built_in_alias(selector: &str) -> Option<&'static str> {
+    match selector.trim().to_ascii_lowercase().as_str() {
+        "openai" | "codex" | "openai/codex" => Some("OpenAI / Codex"),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ProbeSelectionError {
+    #[error("unknown probe target {selector:?}")]
+    UnknownTarget { selector: String },
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ProbeError {
     #[error("probe name must contain 1 to 40 printable characters")]
@@ -139,7 +185,9 @@ fn valid_status(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProbeError, ProbeTarget, valid_expected_status};
+    use super::{
+        ProbeError, ProbeSelectionError, ProbeTarget, select_probe_targets, valid_expected_status,
+    };
 
     #[test]
     fn built_in_targets_have_distinct_expected_statuses() {
@@ -182,5 +230,46 @@ mod tests {
 
         assert!(output.contains("[REDACTED]"));
         assert!(!output.contains("do-not-render"));
+    }
+
+    #[test]
+    fn selects_targets_case_insensitively_and_supports_openai_aliases() {
+        let targets = ProbeTarget::built_in();
+        let selectors = vec!["github".into(), "openai".into()];
+
+        let selected = select_probe_targets(&targets, &selectors).expect("targets should resolve");
+
+        assert_eq!(
+            selected.iter().map(ProbeTarget::name).collect::<Vec<_>>(),
+            ["GitHub", "OpenAI / Codex"]
+        );
+    }
+
+    #[test]
+    fn exact_custom_name_wins_over_a_builtin_alias() {
+        let mut targets = ProbeTarget::built_in();
+        targets.push(
+            ProbeTarget::new("openai", "https://example.com/health", "204", 1_000)
+                .expect("custom target should be valid"),
+        );
+
+        let selected =
+            select_probe_targets(&targets, &["openai".into()]).expect("target should resolve");
+
+        assert_eq!(selected[0].name(), "openai");
+    }
+
+    #[test]
+    fn rejects_unknown_target_names_without_rendering_control_characters() {
+        let error = select_probe_targets(&ProbeTarget::built_in(), &["bad\nname".into()])
+            .expect_err("unknown target should fail");
+
+        assert_eq!(
+            error,
+            ProbeSelectionError::UnknownTarget {
+                selector: "bad\nname".into()
+            }
+        );
+        assert!(error.to_string().contains(r#""bad\nname""#));
     }
 }

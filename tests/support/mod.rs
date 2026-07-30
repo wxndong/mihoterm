@@ -72,6 +72,47 @@ pub async fn spawn_snapshot_server() -> String {
     format!("http://{address}/api/")
 }
 
+pub async fn spawn_scripted_json_server(
+    responses: Vec<(&str, &str, &str)>,
+) -> (String, oneshot::Receiver<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("mock listener should bind");
+    let address = listener
+        .local_addr()
+        .expect("mock listener should have an address");
+    let responses = responses
+        .into_iter()
+        .map(|(needle, status, body)| (needle.to_owned(), status.to_owned(), body.to_owned()))
+        .collect::<Vec<_>>();
+    let request_count = responses.len();
+    let (request_sender, request_receiver) = oneshot::channel();
+
+    tokio::spawn(async move {
+        let mut requests = Vec::with_capacity(request_count);
+        for _ in 0..request_count {
+            let (mut stream, _) = listener.accept().await.expect("mock should accept");
+            let request = read_request(&mut stream).await;
+            let (_, status, body) = responses
+                .iter()
+                .find(|(needle, _, _)| request.contains(needle))
+                .expect("request should match a scripted response");
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("mock should respond");
+            requests.push(request);
+        }
+        request_sender.send(requests).ok();
+    });
+
+    (format!("http://{address}/api/"), request_receiver)
+}
+
 async fn read_request(stream: &mut TcpStream) -> String {
     let mut request = Vec::with_capacity(1024);
     let mut buffer = [0_u8; 1024];

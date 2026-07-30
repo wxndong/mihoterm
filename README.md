@@ -121,6 +121,8 @@ The background lifecycle and explicit integration commands are:
 ```console
 $ mihoterm start
 $ mihoterm status
+$ mihoterm probe --proxy "Proxy A"
+$ mihoterm probe --proxy "Proxy A" --target Google --target openai
 $ eval "$(mihoterm env)"
 $ mihoterm exec -- curl https://example.com
 $ mihoterm shell
@@ -128,6 +130,13 @@ $ mihoterm stop
 $ mihoterm uninstall
 $ mihoterm uninstall --purge
 ```
+
+`probe` runs every configured HTTPS target unless one or more `--target`
+filters are supplied. Built-in names are matched case-insensitively, and
+`openai` or `codex` selects `OpenAI / Codex`. The command uses the active
+managed controller, or the explicit controller passed with `--controller`;
+it never starts Mihomo or changes the selected proxy. Each target is reported
+separately, and the command exits unsuccessfully if any requested probe fails.
 
 The installer-managed Bash function automatically synchronizes the proxy
 environment after `mihoterm`, `run`, `start`, and `stop`. It saves and restores
