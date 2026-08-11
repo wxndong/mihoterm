@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState},
 };
 
 use crate::app::{App, Focus, InputMode, Page, StatusKind};
@@ -54,6 +54,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
             render_proxies(frame, horizontal[1], app);
         }
         Page::Profiles => render_profiles(frame, vertical[1], app),
+        Page::Connections => render_connections(frame, vertical[1], app),
     }
     render_footer(frame, vertical[2], footer_lines);
 }
@@ -62,7 +63,7 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let (version, mode) = app.snapshot.as_ref().map_or(("...", "..."), |snapshot| {
         (snapshot.version.as_str(), snapshot.mode.as_str())
     });
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             "MihoTerm",
             Style::default()
@@ -73,12 +74,93 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
             "  Mihomo {version}  mode {mode}  {}",
             app.controller
         )),
-    ]);
-    let paragraph = Paragraph::new(line);
+    ];
+    if let Some(snapshot) = app.snapshot.as_ref()
+        && let Some(rate) = snapshot.traffic_rate
+    {
+        spans.push(Span::raw(format!(
+            "  ↑ {}/s  ↓ {}/s",
+            fmt_rate(rate.up_bytes_per_sec),
+            fmt_rate(rate.down_bytes_per_sec)
+        )));
+    }
+    let paragraph = Paragraph::new(Line::from(spans));
     if area.height >= 3 {
         frame.render_widget(paragraph.block(Block::bordered().title(" Status ")), area);
     } else {
         frame.render_widget(paragraph, area);
+    }
+}
+
+fn render_connections(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let indices = app.visible_connection_indices();
+    let rows = app
+        .snapshot
+        .as_ref()
+        .map(|snapshot| {
+            indices
+                .iter()
+                .filter_map(|index| {
+                    let conn = snapshot.connections.get(*index)?;
+                    Some(Row::new(vec![
+                        Cell::from(conn.host.clone()),
+                        Cell::from(conn.network.clone()),
+                        Cell::from(conn.chains.join(" > ")),
+                        Cell::from(conn.rule.clone()),
+                        Cell::from(format!("{}/s", fmt_rate(conn.upload))),
+                        Cell::from(format!("{}/s", fmt_rate(conn.download))),
+                    ]))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(16),
+            Constraint::Length(4),
+            Constraint::Percentage(30),
+            Constraint::Length(14),
+            Constraint::Length(10),
+            Constraint::Length(10),
+        ],
+    )
+    .block(pane_block(" Connections ", true))
+    .header(
+        Row::new(vec![
+            Cell::from("Host"),
+            Cell::from("Net"),
+            Cell::from("Chain"),
+            Cell::from("Rule"),
+            Cell::from("Up"),
+            Cell::from("Down"),
+        ])
+        .style(Style::default().fg(Color::DarkGray)),
+    )
+    .highlight_symbol("> ")
+    .row_highlight_style(
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let mut state = TableState::default().with_selected(app.selected_connection_position());
+    frame.render_stateful_widget(table, area, &mut state);
+}
+
+fn fmt_rate(bytes_per_sec: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut value = bytes_per_sec as f64;
+    let mut unit = 0_usize;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{} {}", bytes_per_sec, UNITS[0])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
     }
 }
 
@@ -255,12 +337,20 @@ fn footer_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             "s/Esc back".into(),
             "q quit".into(),
         ],
+        InputMode::Normal if app.page == Page::Connections => vec![
+            "Arrows move".into(),
+            "/ search".into(),
+            "Esc/back back".into(),
+            "r refresh".into(),
+            "q quit".into(),
+        ],
         InputMode::Normal => vec![
             "Arrows move/focus".into(),
             "Enter select".into(),
             "m mode".into(),
             format!("d probe [{}]", app.current_probe().name()),
             "p target".into(),
+            "c connections".into(),
             "/ search".into(),
             "r refresh".into(),
             "s sources".into(),
@@ -412,6 +502,8 @@ mod tests {
                     delay_ms: Some(31),
                 }],
             }],
+            connections: Vec::new(),
+            traffic_rate: None,
         }));
         let backend = TestBackend::new(90, 20);
         let mut terminal = Terminal::new(backend).expect("test terminal should initialize");

@@ -1,7 +1,7 @@
 mod terminal;
 mod view;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use crate::{
     app::{
         Action, App, Input, InputMode, Operation, OperationSuccess, ProfileOperation,
-        ProfileOperationSuccess, Snapshot, fetch_snapshot,
+        ProfileOperationSuccess, Snapshot, enrich_with_connections, fetch_snapshot,
     },
     mihomo::{ApiClient, ApiError},
     profile::{ProfileError, ProfileStore},
@@ -137,8 +137,15 @@ async fn refresh_worker(
     snapshot_sender: mpsc::Sender<Result<Snapshot, ApiError>>,
     mut refresh_receiver: mpsc::Receiver<()>,
 ) {
+    let mut prev_traffic: Option<(u64, u64, Instant)> = None;
     loop {
-        let snapshot = fetch_snapshot(&client).await;
+        let snapshot = match fetch_snapshot(&client).await {
+            Ok(snapshot) => Ok(enrich_with_connections(&client, snapshot, &mut prev_traffic).await),
+            Err(error) => {
+                prev_traffic = None;
+                Err(error)
+            }
+        };
         if snapshot_sender.send(snapshot).await.is_err() {
             return;
         }

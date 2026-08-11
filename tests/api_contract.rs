@@ -73,6 +73,30 @@ async fn proxies_response_exposes_groups_and_delays() {
 }
 
 #[tokio::test]
+async fn connections_request_uses_prefix_and_bearer_auth() {
+    let (controller, request) = spawn_json_once(
+        "200 OK",
+        r#"{"uploadTotal":1024,"downloadTotal":2048,"connections":[]}"#,
+    )
+    .await;
+    let client = ApiClient::new(&controller, Some("test-controller-secret".into()))
+        .expect("client should initialize");
+
+    let response = client.connections().await.expect("connections should load");
+    let request = request.await.expect("mock should capture request");
+
+    assert_eq!(response.upload_total, 1024);
+    assert_eq!(response.download_total, 2048);
+    assert!(response.connections.is_empty());
+    assert!(request.starts_with("GET /api/connections HTTP/1.1\r\n"));
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer test-controller-secret\r\n")
+    );
+}
+
+#[tokio::test]
 async fn errors_do_not_include_response_bodies() {
     let (controller, _) = spawn_json_once(
         "401 Unauthorized",
