@@ -3,7 +3,7 @@
 A tiny, fast, keyboard-first TUI for [Mihomo](https://github.com/MetaCubeX/mihomo)
 on Linux.
 
-> **Status:** v0.1.0-alpha.2 is an early x86_64 Linux prerelease. Managed mode,
+> **Status:** v0.1.0-alpha.3 is an early x86_64 Linux prerelease. Managed mode,
 > user-local installation, and portable packaging have passed the project
 > release gates.
 
@@ -27,6 +27,7 @@ network.
 
 - Inspect the Mihomo version, mode, policy groups, proxies, health state, and
   latest recorded delay.
+- Inspect live connections and real-time throughput in a read-only table.
 - Select proxies and modes through an explicit confirmation step.
 - Probe Google, OpenAI, or GitHub without changing the active proxy.
 - Load additional HTTPS probe targets from a protected TOML configuration.
@@ -48,7 +49,7 @@ network.
 
 ## Planned capabilities
 
-- Inspect live traffic, providers, and connections.
+- Inspect rule and proxy providers; close active connections.
 - Validate portable archives on aarch64 and armv7 Linux.
 
 ## Non-goals
@@ -161,6 +162,8 @@ The TUI is keyboard-first:
 - `m` cycles to the next Mihomo mode after confirmation.
 - `d` probes the selected proxy against the active target.
 - `p` cycles through Google, OpenAI, and GitHub probe targets.
+- `c` opens a read-only live connections view; the header shows real-time
+  throughput.
 - `/` searches the focused list.
 - `r` requests a background refresh.
 - `s` opens subscription profile management.
@@ -168,7 +171,9 @@ The TUI is keyboard-first:
   downloads and validates an update.
 - `q` or `Ctrl-C` closes the TUI without stopping the background proxy.
 
-See [Probe semantics](docs/probes.md) before interpreting delay results.
+See [Probe semantics](docs/probes.md) before interpreting delay results and
+[Live connections](docs/connections.md) for the connection view's polling and
+throughput-rate semantics.
 
 ## Configuration and profiles
 
