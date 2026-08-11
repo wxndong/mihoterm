@@ -13,6 +13,11 @@ export XDG_CONFIG_HOME="$test_home/config"
 export XDG_STATE_HOME="$test_home/state"
 export XDG_RUNTIME_DIR="$test_home/runtime"
 
+# Hermetic: drop any MihoTerm session state inherited from the caller's shell so
+# the installer lifecycle is exercised against a clean environment even when the
+# user running this script has a live managed proxy active in their shell.
+unset "${!MIHOTERM_@}"
+
 install -d -m 700 \
   "$bundle/licenses" \
   "$bundle/shell" \
