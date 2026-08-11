@@ -6,7 +6,7 @@ use crate::{
     profile::{ProfileError, ProfileSource, ProfileSummary},
 };
 
-use super::{PolicyGroup, ProxyRow, Snapshot};
+use super::{ConnectionRow, PolicyGroup, ProxyRow, Snapshot};
 
 const MAX_SOURCE_INPUT_BYTES: usize = 16 * 1024;
 
@@ -20,6 +20,7 @@ pub enum Focus {
 pub enum Page {
     Dashboard,
     Profiles,
+    Connections,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,6 +158,7 @@ pub struct App {
     profile_id_input: String,
     subscription_input: SecretString,
     profile_draft: Option<ProfileDraft>,
+    selected_connection: usize,
 }
 
 impl App {
@@ -195,6 +197,7 @@ impl App {
             profile_id_input: String::new(),
             subscription_input: SecretString::from(String::new()),
             profile_draft: None,
+            selected_connection: 0,
         }
     }
 
@@ -221,8 +224,12 @@ impl App {
             Ok(snapshot) => {
                 let group_name = self.selected_group().map(|group| group.name.clone());
                 let proxy_name = self.selected_proxy().map(|proxy| proxy.name.clone());
+                let connection_id = self
+                    .selected_connection()
+                    .map(|connection| connection.id.clone());
                 self.snapshot = Some(snapshot);
                 self.restore_selection(group_name.as_deref(), proxy_name.as_deref());
+                self.restore_connection_selection(connection_id.as_deref());
                 if self.page == Page::Dashboard
                     && (self.status.message == "Connecting..."
                         || self.status.kind == StatusKind::Error)
@@ -372,6 +379,9 @@ impl App {
         if self.page == Page::Profiles {
             return self.handle_profiles_input(input);
         }
+        if self.page == Page::Connections {
+            return self.handle_connections_input(input);
+        }
 
         match input {
             Input::Up => self.move_selection(-1),
@@ -423,6 +433,7 @@ impl App {
                 }
             }
             Input::Character('s') | Input::Character('S') => self.open_profiles(),
+            Input::Character('c') | Input::Character('C') => self.open_connections(),
             _ => {}
         }
 
@@ -516,6 +527,44 @@ impl App {
         self.visible_proxy_indices()
             .iter()
             .position(|index| *index == self.selected_proxy)
+    }
+
+    #[must_use]
+    pub fn selected_connection(&self) -> Option<&ConnectionRow> {
+        self.snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.connections.get(self.selected_connection))
+    }
+
+    #[must_use]
+    pub fn visible_connection_indices(&self) -> Vec<usize> {
+        let Some(snapshot) = &self.snapshot else {
+            return Vec::new();
+        };
+        let needle = self.search.to_lowercase();
+        snapshot
+            .connections
+            .iter()
+            .enumerate()
+            .filter_map(|(index, connection)| {
+                let searchable = needle.is_empty()
+                    || connection.host.to_lowercase().contains(&needle)
+                    || connection.network.to_lowercase().contains(&needle)
+                    || connection.rule.to_lowercase().contains(&needle)
+                    || connection
+                        .chains
+                        .iter()
+                        .any(|chain| chain.to_lowercase().contains(&needle));
+                searchable.then_some(index)
+            })
+            .collect()
+    }
+
+    #[must_use]
+    pub fn selected_connection_position(&self) -> Option<usize> {
+        self.visible_connection_indices()
+            .iter()
+            .position(|index| *index == self.selected_connection)
     }
 
     fn handle_search_input(&mut self, input: Input) -> Action {
@@ -659,6 +708,87 @@ impl App {
             kind: StatusKind::Info,
             message: "Subscription addresses are masked to protect credentials".into(),
         };
+    }
+
+    fn open_connections(&mut self) {
+        self.page = Page::Connections;
+        self.search.clear();
+        self.focus = Focus::Groups;
+        self.selected_connection = 0;
+        self.status = StatusLine {
+            kind: StatusKind::Info,
+            message: "Live connections; read-only view".into(),
+        };
+    }
+
+    fn handle_connections_input(&mut self, input: Input) -> Action {
+        match input {
+            Input::Up => self.move_connection_selection(-1),
+            Input::Down => self.move_connection_selection(1),
+            Input::Home => {
+                self.selected_connection = self
+                    .visible_connection_indices()
+                    .first()
+                    .copied()
+                    .unwrap_or(0);
+            }
+            Input::End => {
+                self.selected_connection = self
+                    .visible_connection_indices()
+                    .last()
+                    .copied()
+                    .unwrap_or(0);
+            }
+            Input::Escape => {
+                if self.search.is_empty() {
+                    self.page = Page::Dashboard;
+                } else {
+                    self.search.clear();
+                    self.ensure_connection_visible();
+                }
+            }
+            Input::Left => {
+                self.search.clear();
+                self.page = Page::Dashboard;
+            }
+            Input::Character('/') => {
+                self.input_mode = InputMode::Search;
+            }
+            Input::Character('r') | Input::Character('R') => {
+                self.mark_refreshing();
+                return Action::Refresh;
+            }
+            _ => {}
+        }
+        Action::None
+    }
+
+    fn move_connection_selection(&mut self, offset: isize) {
+        let visible = self.visible_connection_indices();
+        self.selected_connection = move_in_visible(&visible, self.selected_connection, offset);
+    }
+
+    fn ensure_connection_visible(&mut self) {
+        let visible = self.visible_connection_indices();
+        if !visible.contains(&self.selected_connection) {
+            self.selected_connection = visible.first().copied().unwrap_or(0);
+        }
+    }
+
+    fn restore_connection_selection(&mut self, id: Option<&str>) {
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        if let Some(id) = id
+            && let Some(position) = snapshot.connections.iter().position(|conn| conn.id == id)
+        {
+            self.selected_connection = position;
+            return;
+        }
+        // The selected connection vanished (or none was tracked): clamp into range.
+        self.selected_connection = self
+            .selected_connection
+            .min(snapshot.connections.len().saturating_sub(1));
     }
 
     fn begin_add_profile(&mut self) {
@@ -1066,8 +1196,8 @@ fn move_in_visible(visible: &[usize], current: usize, offset: isize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        Action, App, Focus, Input, InputMode, Operation, OperationSuccess, Page, PolicyGroup,
-        ProfileOperation, ProfileOperationSuccess, ProxyRow, Snapshot,
+        Action, App, ConnectionRow, Focus, Input, InputMode, Operation, OperationSuccess, Page,
+        PolicyGroup, ProfileOperation, ProfileOperationSuccess, ProxyRow, Snapshot,
     };
     use crate::{
         mihomo::OperatingMode,
@@ -1105,6 +1235,8 @@ mod tests {
                     proxies: Vec::new(),
                 },
             ],
+            connections: Vec::new(),
+            traffic_rate: None,
         }
     }
 
@@ -1346,5 +1478,91 @@ mod tests {
 
         assert!(app.status.message.contains("restart"));
         assert!(!app.status.message.contains("hidden"));
+    }
+
+    #[test]
+    fn c_opens_the_connections_page() {
+        let mut app = loaded_app_with_connections();
+
+        assert_eq!(app.page, Page::Dashboard);
+
+        app.handle_input(Input::Character('c'));
+
+        assert_eq!(app.page, Page::Connections);
+        assert_eq!(app.selected_connection_position(), Some(0));
+    }
+
+    #[test]
+    fn connections_search_filters_by_host() {
+        let mut app = loaded_app_with_connections();
+        app.handle_input(Input::Character('c'));
+        assert_eq!(app.visible_connection_indices().len(), 2);
+
+        app.handle_input(Input::Character('/'));
+        app.handle_input(Input::Character('b'));
+
+        assert_eq!(app.visible_connection_indices(), vec![1]);
+        assert!(app.selected_connection_position().is_none());
+    }
+
+    #[test]
+    fn connection_selection_survives_refresh_by_id() {
+        let mut app = loaded_app_with_connections();
+        app.handle_input(Input::Character('c'));
+        app.handle_input(Input::Down);
+        assert_eq!(
+            app.selected_connection().map(|conn| conn.id.as_str()),
+            Some("conn-b")
+        );
+
+        // The same connection id must remain selected even if the order changes.
+        let mut reordered = connections_snapshot();
+        reordered.connections.reverse();
+        app.apply_refresh(Ok(reordered));
+
+        assert_eq!(
+            app.selected_connection().map(|conn| conn.id.as_str()),
+            Some("conn-b")
+        );
+    }
+
+    #[test]
+    fn escape_returns_to_the_dashboard_from_connections() {
+        let mut app = loaded_app_with_connections();
+        app.handle_input(Input::Character('c'));
+        app.handle_input(Input::Escape);
+
+        assert_eq!(app.page, Page::Dashboard);
+    }
+
+    fn connections_snapshot() -> Snapshot {
+        let mut snapshot = snapshot();
+        snapshot.connections = vec![
+            ConnectionRow {
+                id: "conn-a".into(),
+                host: "a.example.com".into(),
+                network: "tcp".into(),
+                chains: vec!["Proxy A".into()],
+                rule: "DOMAIN-SUFFIX .com".into(),
+                upload: 10,
+                download: 20,
+            },
+            ConnectionRow {
+                id: "conn-b".into(),
+                host: "b.example.com".into(),
+                network: "udp".into(),
+                chains: vec!["DIRECT".into()],
+                rule: "DIRECT".into(),
+                upload: 0,
+                download: 0,
+            },
+        ];
+        snapshot
+    }
+
+    fn loaded_app_with_connections() -> App {
+        let mut app = App::new("http://127.0.0.1:9090".into());
+        app.apply_refresh(Ok(connections_snapshot()));
+        app
     }
 }

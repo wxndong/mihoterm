@@ -9,6 +9,17 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- _Nothing yet._
+
+## [0.1.0-alpha.3] - 2026-08-11
+
+### Added
+
+- A read-only live connections view (`c`) backed by the Mihomo `/connections`
+  endpoint, with host, network, proxy chain, rule, and per-connection
+  throughput columns, plus a real-time aggregate upload/download rate in the
+  header.
+- A typed `ApiClient::connections` method and connection models.
 - A headless `probe` command for running built-in or configured targets through
   an explicitly named Mihomo proxy, with per-target output and aggregate exit
   status.
@@ -83,6 +94,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Request Mihomo-compatible YAML from subscription services that select their
   response format from the client identifier.
 
-[Unreleased]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.2...HEAD
+[Unreleased]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.3...HEAD
+[0.1.0-alpha.3]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.2...v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/wxndong/mihoterm/releases/tag/v0.1.0-alpha.1

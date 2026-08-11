@@ -138,9 +138,59 @@ pub struct DelayResponse {
     pub mean_delay: Option<u32>,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct ConnectionsResponse {
+    #[serde(default, rename = "uploadTotal")]
+    pub upload_total: u64,
+    #[serde(default, rename = "downloadTotal")]
+    pub download_total: u64,
+    #[serde(default)]
+    pub connections: Vec<Connection>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct Connection {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub upload: u64,
+    #[serde(default)]
+    pub download: u64,
+    #[serde(default)]
+    pub start: String,
+    #[serde(default)]
+    pub chains: Vec<String>,
+    #[serde(default)]
+    pub rule: String,
+    #[serde(default, rename = "rulePayload")]
+    pub rule_payload: String,
+    #[serde(default)]
+    pub metadata: ConnectionMetadata,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+pub struct ConnectionMetadata {
+    #[serde(default)]
+    pub network: String,
+    #[serde(default, rename = "type")]
+    pub kind: String,
+    #[serde(default, rename = "sourceIP")]
+    pub source_ip: String,
+    #[serde(default, rename = "destinationIP")]
+    pub destination_ip: String,
+    #[serde(default, rename = "sourcePort")]
+    pub source_port: String,
+    #[serde(default, rename = "destinationPort")]
+    pub destination_port: String,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default, rename = "processPath")]
+    pub process_path: String,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{OperatingMode, ProxiesResponse, ProxyInfo};
+    use super::{ConnectionsResponse, OperatingMode, ProxiesResponse, ProxyInfo};
 
     #[test]
     fn classifies_groups_without_relying_only_on_members() {
@@ -187,5 +237,61 @@ mod tests {
         assert_eq!(OperatingMode::Global.next(), OperatingMode::Direct);
         assert_eq!(OperatingMode::Direct.next(), OperatingMode::Rule);
         assert_eq!(OperatingMode::from_api("RULE"), Some(OperatingMode::Rule));
+    }
+
+    #[test]
+    fn connections_response_parses_totals_and_metadata() {
+        let response: ConnectionsResponse = serde_json::from_str(
+            r#"{
+                "uploadTotal": 2048,
+                "downloadTotal": 4096,
+                "connections": [
+                    {
+                        "id": "abc-123",
+                        "upload": 100,
+                        "download": 200,
+                        "start": "2026-08-10T00:00:00Z",
+                        "chains": ["Proxy A", "DIRECT"],
+                        "rule": "DOMAIN-SUFFIX",
+                        "rulePayload": ".com",
+                        "metadata": {
+                            "network": "tcp",
+                            "type": "HTTP",
+                            "sourceIP": "127.0.0.1",
+                            "destinationIP": "192.0.2.1",
+                            "sourcePort": "50000",
+                            "destinationPort": "443",
+                            "host": "example.com",
+                            "processPath": "/usr/bin/curl"
+                        }
+                    }
+                ]
+            }"#,
+        )
+        .expect("connections fixture should parse");
+
+        assert_eq!(response.upload_total, 2048);
+        assert_eq!(response.download_total, 4096);
+        let connection = &response.connections[0];
+        assert_eq!(connection.id, "abc-123");
+        assert_eq!(
+            connection.chains,
+            vec!["Proxy A".to_owned(), "DIRECT".to_owned()]
+        );
+        assert_eq!(connection.rule_payload, ".com");
+        assert_eq!(connection.metadata.network, "tcp");
+        assert_eq!(connection.metadata.kind, "HTTP");
+        assert_eq!(connection.metadata.host, "example.com");
+    }
+
+    #[test]
+    fn connections_response_tolerates_missing_fields() {
+        let response: ConnectionsResponse =
+            serde_json::from_str(r#"{"connections": [{"id": "only-id"}]}"#)
+                .expect("a minimal payload should parse with defaults");
+
+        assert_eq!(response.upload_total, 0);
+        assert!(response.connections[0].chains.is_empty());
+        assert!(response.connections[0].metadata.host.is_empty());
     }
 }

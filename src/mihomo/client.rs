@@ -9,7 +9,10 @@ use crate::probe::ProbeTarget;
 
 use super::{
     error::{ApiError, RequestFailure},
-    model::{DelayResponse, OperatingMode, ProxiesResponse, RuntimeConfig, VersionInfo},
+    model::{
+        ConnectionsResponse, DelayResponse, OperatingMode, ProxiesResponse, RuntimeConfig,
+        VersionInfo,
+    },
 };
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -66,6 +69,10 @@ impl ApiClient {
 
     pub async fn proxies(&self) -> Result<ProxiesResponse, ApiError> {
         self.get_json("get proxies", "proxies").await
+    }
+
+    pub async fn connections(&self) -> Result<ConnectionsResponse, ApiError> {
+        self.get_json("get connections", "connections").await
     }
 
     pub async fn select_proxy(&self, group: &str, proxy: &str) -> Result<(), ApiError> {
