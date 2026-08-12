@@ -11,7 +11,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - _Nothing yet._
 
-## [0.1.0-alpha.3] - 2026-08-11
+## [0.1.0-alpha.3] - 2026-08-12
 
 ### Added
 
@@ -23,6 +23,13 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A headless `probe` command for running built-in or configured targets through
   an explicitly named Mihomo proxy, with per-target output and aggregate exit
   status.
+
+### Fixed
+
+- Prevent managed profiles from entering a proxy-node DNS bootstrap cycle when
+  they enable DNS but omit `proxy-server-nameserver`; MihoTerm now derives the
+  dedicated node resolvers from the profile's own `default-nameserver` while
+  preserving explicit DNS policy.
 
 ## [0.1.0-alpha.2] - 2026-07-27
 

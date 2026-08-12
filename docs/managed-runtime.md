@@ -77,6 +77,15 @@ ordinary outbound behavior. It overrides inbound and system-changing settings:
   disabled; and
 - generated controller credentials replace stored values.
 
+When a profile enables DNS but omits a dedicated node-domain resolver, the
+derived runtime reuses that profile's non-empty `default-nameserver` value as
+`proxy-server-nameserver`. It also makes Mihomo's default
+`respect-rules: false` behavior explicit when the profile does not set the
+field. This prevents proxy-node DNS bootstrap from depending on the proxy it
+is trying to start without selecting a resolver provider on the user's
+behalf. Any explicit `respect-rules` or `proxy-server-nameserver` value is
+preserved, including an explicitly empty node resolver list.
+
 The source profile is never rewritten.
 
 ## Application integration
