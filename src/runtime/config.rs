@@ -63,11 +63,46 @@ pub(super) fn build_managed_config(
     if let Some(Value::Mapping(dns)) = root.get_mut(string("dns")) {
         dns.remove(string("listen"));
         set_number(dns, "listen-routing-mark", 0);
+        harden_dns_bootstrap(dns);
     }
 
     yaml_serde::to_string(&value)
         .map(String::into_bytes)
         .map_err(|_| RuntimeError::ConfigurationSerialization)
+}
+
+fn harden_dns_bootstrap(dns: &mut Mapping) {
+    if dns.get(string("enable")).and_then(Value::as_bool) != Some(true) {
+        return;
+    }
+
+    if !dns.contains_key(string("respect-rules")) {
+        set_bool(dns, "respect-rules", false);
+    }
+
+    if dns.contains_key(string("proxy-server-nameserver")) {
+        return;
+    }
+
+    if let Some(bootstrap_nameservers) = dns
+        .get(string("default-nameserver"))
+        .and_then(nameserver_sequence)
+    {
+        dns.insert(
+            string("proxy-server-nameserver"),
+            Value::Sequence(bootstrap_nameservers),
+        );
+    }
+}
+
+fn nameserver_sequence(value: &Value) -> Option<Vec<Value>> {
+    match value {
+        Value::String(value) if !value.trim().is_empty() => {
+            Some(vec![Value::String(value.clone())])
+        }
+        Value::Sequence(values) if !values.is_empty() => Some(values.clone()),
+        _ => None,
+    }
 }
 
 fn set_disabled_mapping(root: &mut Mapping, key: &str) {
@@ -199,5 +234,105 @@ proxies:
         );
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn runtime_configuration_bootstraps_proxy_node_dns_from_profile_defaults() {
+        let input = br#"
+dns:
+  enable: true
+  default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  nameserver:
+    - https://dns.example/dns-query
+proxies:
+  - name: Proxy
+    type: direct
+"#;
+
+        let output = build_managed_config(input, 41001, 41002, "secret", "user", "password")
+            .expect("configuration should be derived");
+        let value: Value = yaml_serde::from_slice(&output).expect("output should be YAML");
+
+        assert_eq!(value["dns"]["respect-rules"].as_bool(), Some(false));
+        assert_eq!(
+            value["dns"]["proxy-server-nameserver"][0].as_str(),
+            Some("223.5.5.5")
+        );
+        assert_eq!(
+            value["dns"]["proxy-server-nameserver"][1].as_str(),
+            Some("119.29.29.29")
+        );
+    }
+
+    #[test]
+    fn runtime_configuration_preserves_explicit_proxy_node_dns_policy() {
+        let input = br#"
+dns:
+  enable: true
+  respect-rules: true
+  default-nameserver:
+    - 223.5.5.5
+  proxy-server-nameserver:
+    - tls://1.1.1.1
+proxies:
+  - name: Proxy
+    type: direct
+"#;
+
+        let output = build_managed_config(input, 41001, 41002, "secret", "user", "password")
+            .expect("configuration should be derived");
+        let value: Value = yaml_serde::from_slice(&output).expect("output should be YAML");
+
+        assert_eq!(value["dns"]["respect-rules"].as_bool(), Some(true));
+        assert_eq!(
+            value["dns"]["proxy-server-nameserver"][0].as_str(),
+            Some("tls://1.1.1.1")
+        );
+    }
+
+    #[test]
+    fn runtime_configuration_does_not_invent_dns_without_profile_defaults() {
+        let input = br#"
+dns:
+  enable: true
+  nameserver:
+    - https://dns.example/dns-query
+proxies:
+  - name: Proxy
+    type: direct
+"#;
+
+        let output = build_managed_config(input, 41001, 41002, "secret", "user", "password")
+            .expect("configuration should be derived");
+        let value: Value = yaml_serde::from_slice(&output).expect("output should be YAML");
+
+        assert_eq!(value["dns"]["respect-rules"].as_bool(), Some(false));
+        assert!(value["dns"]["proxy-server-nameserver"].is_null());
+    }
+
+    #[test]
+    fn runtime_configuration_preserves_an_explicit_empty_proxy_nameserver() {
+        let input = br#"
+dns:
+  enable: true
+  default-nameserver:
+    - 223.5.5.5
+  proxy-server-nameserver: []
+proxies:
+  - name: Proxy
+    type: direct
+"#;
+
+        let output = build_managed_config(input, 41001, 41002, "secret", "user", "password")
+            .expect("configuration should be derived");
+        let value: Value = yaml_serde::from_slice(&output).expect("output should be YAML");
+
+        assert!(
+            value["dns"]["proxy-server-nameserver"]
+                .as_sequence()
+                .is_some_and(Vec::is_empty)
+        );
     }
 }

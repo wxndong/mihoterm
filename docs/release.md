@@ -19,8 +19,10 @@ Planned first-release gates:
   profiles, and isolated canary use;
 - `v0.1.0-alpha.2`: persistent authenticated proxy lifecycle, user-local
   installation, safe uninstall, shell integration, and TUI source management;
-- `v0.1.0-beta.1`: live traffic and connection views plus validated aarch64
-  and armv7 bundles;
+- `v0.1.0-alpha.3`: headless probes, live connection and throughput views, and
+  managed proxy-node DNS bootstrap compatibility;
+- `v0.1.0-beta.1`: validated aarch64 and armv7 bundles plus compatibility
+  review;
 - `v0.1.0-rc.1`: security audit, compatibility review, and release automation;
 - `v0.1.0`: sustained canary use and documentation review.
 
