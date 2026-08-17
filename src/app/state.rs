@@ -29,6 +29,7 @@ pub enum InputMode {
     Normal,
     Search,
     Confirm,
+    Mode,
     ProfileId,
     SubscriptionUrl,
 }
@@ -158,6 +159,7 @@ pub struct App {
     pub page: Page,
     pub focus: Focus,
     pub input_mode: InputMode,
+    mode_choice: OperatingMode,
     pub search: String,
     pub status: StatusLine,
     probes: Vec<ProbeTarget>,
@@ -194,6 +196,7 @@ impl App {
             page: Page::Dashboard,
             focus: Focus::Groups,
             input_mode: InputMode::Normal,
+            mode_choice: OperatingMode::Global,
             search: String::new(),
             status: StatusLine {
                 kind: StatusKind::Info,
@@ -340,9 +343,19 @@ impl App {
                 if let Some(snapshot) = &mut self.snapshot {
                     snapshot.mode = mode.to_string();
                 }
+                self.search.clear();
+                self.focus = Focus::Groups;
+                self.ensure_selection_visible();
+                if mode == OperatingMode::Global
+                    && self
+                        .selected_group()
+                        .is_some_and(|group| !group.proxies.is_empty())
+                {
+                    self.focus = Focus::Proxies;
+                }
                 self.status = StatusLine {
                     kind: StatusKind::Ready,
-                    message: format!("Mode changed to {mode}"),
+                    message: format!("模式已切换为 {}", mode.label()),
                 };
             }
             Ok(OperationSuccess::ProbeMeasured {
@@ -387,6 +400,11 @@ impl App {
         &self.probes[self.probe_index]
     }
 
+    #[must_use]
+    pub const fn mode_choice(&self) -> OperatingMode {
+        self.mode_choice
+    }
+
     pub fn handle_input(&mut self, input: Input) -> Action {
         if input == Input::Quit {
             return Action::Quit;
@@ -397,6 +415,9 @@ impl App {
         }
         if self.input_mode == InputMode::Confirm {
             return self.handle_confirm_input(input);
+        }
+        if self.input_mode == InputMode::Mode {
+            return self.handle_mode_input(input);
         }
         if self.input_mode == InputMode::ProfileId {
             return self.handle_profile_id_input(input);
@@ -521,10 +542,26 @@ impl App {
         } else {
             ""
         };
-        visible_indices(
-            snapshot.groups.iter().map(|group| group.name.as_str()),
-            search,
-        )
+        let mode = OperatingMode::from_api(&snapshot.mode);
+        let needle = search.to_lowercase();
+        snapshot
+            .groups
+            .iter()
+            .enumerate()
+            .filter_map(|(index, group)| {
+                let reserved = group.name.eq_ignore_ascii_case("GLOBAL")
+                    || group.name.eq_ignore_ascii_case("DIRECT");
+                let mode_visible = match mode {
+                    Some(OperatingMode::Global) => group.name.eq_ignore_ascii_case("GLOBAL"),
+                    Some(OperatingMode::Direct) => false,
+                    Some(OperatingMode::Rule) => !reserved,
+                    None => true,
+                };
+                let search_visible =
+                    needle.is_empty() || group.name.to_lowercase().contains(&needle);
+                (mode_visible && search_visible).then_some(index)
+            })
+            .collect()
     }
 
     #[must_use]
@@ -985,7 +1022,7 @@ impl App {
                     PendingChange::SetMode { mode } => {
                         self.status = StatusLine {
                             kind: StatusKind::Info,
-                            message: format!("Changing mode to {mode}..."),
+                            message: format!("正在切换到 {}...", mode.label()),
                         };
                         Operation::SetMode { mode }
                     }
@@ -1010,6 +1047,36 @@ impl App {
             }
             _ => Action::None,
         }
+    }
+
+    fn handle_mode_input(&mut self, input: Input) -> Action {
+        match input {
+            Input::Up | Input::Left => self.mode_choice = self.mode_choice.previous(),
+            Input::Down | Input::Right | Input::Tab => {
+                self.mode_choice = self.mode_choice.next();
+            }
+            Input::Character('g' | 'G') => self.mode_choice = OperatingMode::Global,
+            Input::Character('r' | 'R') => self.mode_choice = OperatingMode::Rule,
+            Input::Character('d' | 'D') => self.mode_choice = OperatingMode::Direct,
+            Input::Enter => {
+                let mode = self.mode_choice;
+                self.pending = Some(PendingChange::SetMode { mode });
+                self.input_mode = InputMode::Confirm;
+                self.status = StatusLine {
+                    kind: StatusKind::Info,
+                    message: format!("确认切换到 {}？", mode.label()),
+                };
+            }
+            Input::Escape | Input::Character('q' | 'Q') => {
+                self.input_mode = InputMode::Normal;
+                self.status = StatusLine {
+                    kind: StatusKind::Info,
+                    message: "模式切换已取消".into(),
+                };
+            }
+            _ => {}
+        }
+        Action::None
     }
 
     fn begin_proxy_selection(&mut self) {
@@ -1062,14 +1129,11 @@ impl App {
         let Some(snapshot) = &self.snapshot else {
             return;
         };
-        let mode = OperatingMode::from_api(&snapshot.mode)
-            .unwrap_or(OperatingMode::Direct)
-            .next();
-        self.pending = Some(PendingChange::SetMode { mode });
-        self.input_mode = InputMode::Confirm;
+        self.mode_choice = OperatingMode::from_api(&snapshot.mode).unwrap_or(OperatingMode::Global);
+        self.input_mode = InputMode::Mode;
         self.status = StatusLine {
             kind: StatusKind::Info,
-            message: format!("Change mode to {mode}?"),
+            message: "请选择流量模式".into(),
         };
     }
 
@@ -1213,7 +1277,17 @@ impl App {
                 self.selected_proxy
             });
         self.ensure_selection_visible();
-        if self
+        if OperatingMode::from_api(
+            self.snapshot
+                .as_ref()
+                .map_or("", |snapshot| snapshot.mode.as_str()),
+        ) == Some(OperatingMode::Global)
+            && self
+                .selected_group()
+                .is_some_and(|group| !group.proxies.is_empty())
+        {
+            self.focus = Focus::Proxies;
+        } else if self
             .selected_group()
             .is_none_or(|group| group.proxies.is_empty())
         {
@@ -1441,6 +1515,10 @@ mod tests {
 
         app.handle_input(Input::Character('m'));
 
+        assert_eq!(app.input_mode, InputMode::Mode);
+        assert_eq!(app.mode_choice(), OperatingMode::Rule);
+        app.handle_input(Input::Character('g'));
+        assert_eq!(app.handle_input(Input::Enter), Action::None);
         assert_eq!(app.input_mode, InputMode::Confirm);
         assert_eq!(
             app.handle_input(Input::Enter),
@@ -1448,6 +1526,40 @@ mod tests {
                 mode: OperatingMode::Global,
             })
         );
+    }
+
+    #[test]
+    fn global_mode_only_exposes_global_and_focuses_its_nodes() {
+        let mut global = snapshot();
+        global.mode = "global".into();
+        global.groups.push(PolicyGroup {
+            name: "GLOBAL".into(),
+            kind: "Selector".into(),
+            selected: Some("Proxy A".into()),
+            proxies: snapshot().groups[0].proxies.clone(),
+        });
+        let mut app = App::new("http://127.0.0.1:9090".into());
+
+        app.apply_refresh(Ok(global));
+
+        assert_eq!(app.visible_group_indices().len(), 1);
+        assert_eq!(
+            app.selected_group().map(|group| group.name.as_str()),
+            Some("GLOBAL")
+        );
+        assert_eq!(app.focus, Focus::Proxies);
+    }
+
+    #[test]
+    fn direct_mode_exposes_no_proxy_selection() {
+        let mut direct = snapshot();
+        direct.mode = "direct".into();
+        let mut app = App::new("http://127.0.0.1:9090".into());
+
+        app.apply_refresh(Ok(direct));
+
+        assert!(app.visible_group_indices().is_empty());
+        assert_eq!(app.focus, Focus::Groups);
     }
 
     #[test]

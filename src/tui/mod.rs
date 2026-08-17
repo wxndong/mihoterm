@@ -323,6 +323,7 @@ mod tests {
             map_key(key, InputMode::Confirm),
             Some(Input::Character('q'))
         );
+        assert_eq!(map_key(key, InputMode::Mode), Some(Input::Character('q')));
         assert_eq!(
             map_key(key, InputMode::SubscriptionUrl),
             Some(Input::Character('q'))

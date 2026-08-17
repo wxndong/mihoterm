@@ -11,10 +11,17 @@ $ exec "$SHELL" -l
 $ mihoterm
 ```
 
+The installer offers per-user automatic startup and defaults to yes. Use
+`--no-autostart` to keep startup fully manual, or `--autostart` for unattended
+installation. A different installed version is stopped and replaced only after
+the new immutable release directory has been verified; failed core startup
+rolls back to the previous release.
+
 On first run, paste an HTTPS subscription URL at the hidden prompt. MihoTerm
 downloads and validates the profile, starts only the bundled Mihomo process,
 and opens the TUI. Later runs reuse the protected local profile. No compiler,
-runtime environment, root access, or system service is needed.
+runtime environment or root access is needed; automatic startup is an optional
+per-user integration.
 
 Run `./mihoterm` directly instead if no installation or shell integration is
 desired.

@@ -52,6 +52,10 @@ command_link=$bin_dir/mihoterm
 profile_file=$HOME/.profile
 bashrc_file=$HOME/.bashrc
 bash_profile_file=$HOME/.bash_profile
+systemd_user_dir=$config_home/systemd/user
+autostart_unit=$systemd_user_dir/mihoterm.service
+autostart_wants=$systemd_user_dir/default.target.wants
+autostart_link=$autostart_wants/mihoterm.service
 
 case "$app_root" in
     "$data_home"/mihoterm) ;;
@@ -174,13 +178,82 @@ owned_command_link() {
     [ "$(readlink "$command_link")" = "$current_link/mihoterm" ]
 }
 
+owned_autostart_unit() {
+    [ -f "$autostart_unit" ] &&
+        [ ! -L "$autostart_unit" ] &&
+        {
+            cmp -s "$script_dir/systemd/mihoterm.service" "$autostart_unit" ||
+                {
+                    [ -f "$current_link/systemd/mihoterm.service" ] &&
+                        cmp -s "$current_link/systemd/mihoterm.service" "$autostart_unit"
+                }
+        }
+}
+
+reload_user_manager() {
+    command -v systemctl >/dev/null 2>&1 || return 0
+    systemctl --user daemon-reload >/dev/null 2>&1 ||
+        note "MihoTerm autostart was registered; the user service manager will load it at next login."
+}
+
+register_autostart() {
+    [ "$bin_dir" = "$HOME/.local/bin" ] ||
+        fail "autostart requires the default ~/.local/bin installation; use --no-autostart"
+    if [ -e "$autostart_unit" ] || [ -L "$autostart_unit" ]; then
+        owned_autostart_unit ||
+            fail "refusing to replace an unowned service at $autostart_unit"
+    fi
+    install -d -m 700 "$systemd_user_dir"
+    install -m 644 "$script_dir/systemd/mihoterm.service" "$autostart_unit"
+    install -d -m 700 "$autostart_wants"
+    if [ -e "$autostart_link" ] || [ -L "$autostart_link" ]; then
+        [ -L "$autostart_link" ] &&
+            [ "$(readlink "$autostart_link")" = ../mihoterm.service ] ||
+            fail "refusing to replace an unowned autostart link at $autostart_link"
+    else
+        ln -s ../mihoterm.service "$autostart_link"
+    fi
+    reload_user_manager
+    note "Registered MihoTerm to start with the user service manager."
+    if command -v loginctl >/dev/null 2>&1; then
+        linger=$(loginctl show-user "$(id -un)" --property=Linger --value 2>/dev/null || true)
+        if [ "$linger" = no ]; then
+            note "Boot-before-login requires an administrator to run: loginctl enable-linger $(id -un)"
+        fi
+    fi
+}
+
+remove_autostart() {
+    if [ -e "$autostart_unit" ] || [ -L "$autostart_unit" ]; then
+        owned_autostart_unit ||
+            fail "refusing to remove an unowned service at $autostart_unit"
+    fi
+    if [ -e "$autostart_link" ] || [ -L "$autostart_link" ]; then
+        [ -L "$autostart_link" ] &&
+            [ "$(readlink "$autostart_link")" = ../mihoterm.service ] ||
+            fail "refusing to remove an unowned autostart link at $autostart_link"
+        rm -f "$autostart_link"
+    fi
+    if [ -e "$autostart_unit" ]; then
+        rm -f "$autostart_unit"
+    fi
+    reload_user_manager
+}
+
 remove_installation() {
     purge=${1:-no}
+
+    if [ -e "$autostart_unit" ] || [ -L "$autostart_unit" ]; then
+        owned_autostart_unit ||
+            fail "refusing to remove an unowned service at $autostart_unit"
+    fi
 
     if [ -x "$current_link/mihoterm" ]; then
         "$current_link/mihoterm" stop >/dev/null 2>&1 ||
             fail "could not stop the managed proxy; installation was preserved"
     fi
+
+    remove_autostart
 
     remove_shell_block "$profile_file"
     remove_shell_block "$bashrc_file"
@@ -227,23 +300,52 @@ remove_installation() {
 
 install_bundle() {
     shell_integration=yes
-    if [ "${1:-}" = "--no-shell" ]; then
-        shell_integration=no
+    autostart=ask
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --no-shell) shell_integration=no ;;
+            --autostart) autostart=yes ;;
+            --no-autostart) autostart=no ;;
+            *) fail "usage: ./install.sh [--no-shell] [--autostart|--no-autostart]" ;;
+        esac
         shift
+    done
+    if [ "$autostart" = ask ]; then
+        if [ -t 0 ]; then
+            printf 'Register MihoTerm to start automatically? [Y/n] '
+            IFS= read -r answer || answer=
+            case "$answer" in
+                "" | y | Y | yes | YES | Yes) autostart=yes ;;
+                n | N | no | NO | No) autostart=no ;;
+                *) fail "please answer yes or no" ;;
+            esac
+        else
+            autostart=yes
+        fi
     fi
-    [ "$#" -eq 0 ] || fail "usage: ./install.sh [--no-shell]"
 
     for required in \
         mihoterm mihomo geoip.metadb geoip.dat geosite.dat \
         LICENSE THIRD_PARTY_NOTICES.md THIRD-PARTY-LICENSES.html \
         CORE-METADATA.txt DATA-METADATA.txt README.md install.sh \
-        shell/mihoterm.sh licenses/Mihomo-GPL-3.0.txt \
+        shell/mihoterm.sh systemd/mihoterm.service licenses/Mihomo-GPL-3.0.txt \
         licenses/meta-rules-dat-GPL-3.0.txt; do
         [ -f "$script_dir/$required" ] ||
             fail "portable bundle is missing $required"
     done
     [ -x "$script_dir/mihoterm" ] || fail "mihoterm is not executable"
     [ -x "$script_dir/mihomo" ] || fail "mihomo is not executable"
+    if [ -e "$command_link" ] || [ -L "$command_link" ]; then
+        owned_command_link ||
+            fail "refusing to replace an unowned command at $command_link"
+    fi
+    if [ -e "$autostart_unit" ] || [ -L "$autostart_unit" ]; then
+        owned_autostart_unit ||
+            fail "refusing to replace an unowned service at $autostart_unit"
+    fi
+    if [ "$autostart" = yes ] && [ "$bin_dir" != "$HOME/.local/bin" ]; then
+        fail "autostart requires the default ~/.local/bin installation; use --no-autostart"
+    fi
 
     version=$("$script_dir/mihoterm" --version | awk 'NR == 1 { print $2 }')
     case "$version" in
@@ -256,11 +358,12 @@ install_bundle() {
         staging=$releases_dir/.install-$$
         [ ! -e "$staging" ] ||
             fail "temporary installation directory already exists"
-        install -d -m 755 "$staging/licenses" "$staging/shell"
+        install -d -m 755 "$staging/licenses" "$staging/shell" "$staging/systemd"
         install -m 755 "$script_dir/mihoterm" "$staging/mihoterm"
         install -m 755 "$script_dir/mihomo" "$staging/mihomo"
         install -m 755 "$script_dir/install.sh" "$staging/install.sh"
         install -m 644 "$script_dir/shell/mihoterm.sh" "$staging/shell/mihoterm.sh"
+        install -m 644 "$script_dir/systemd/mihoterm.service" "$staging/systemd/mihoterm.service"
         for file in \
             geoip.metadb geoip.dat geosite.dat LICENSE THIRD_PARTY_NOTICES.md \
             THIRD-PARTY-LICENSES.html CORE-METADATA.txt DATA-METADATA.txt README.md; do
@@ -282,15 +385,40 @@ install_bundle() {
             mihoterm mihomo geoip.metadb geoip.dat geosite.dat \
             LICENSE THIRD_PARTY_NOTICES.md THIRD-PARTY-LICENSES.html \
             CORE-METADATA.txt DATA-METADATA.txt README.md install.sh \
-            shell/mihoterm.sh licenses/Mihomo-GPL-3.0.txt \
+            shell/mihoterm.sh systemd/mihoterm.service licenses/Mihomo-GPL-3.0.txt \
             licenses/meta-rules-dat-GPL-3.0.txt; do
             cmp -s "$script_dir/$file" "$release_dir/$file" ||
                 fail "installed release $version differs from this bundle"
         done
     fi
 
+    previous_release=
+    previous_binary=
+    previous_profile=
+    was_running=no
     if [ -e "$current_link" ] && [ ! -L "$current_link" ]; then
         fail "refusing to replace non-link path $current_link"
+    fi
+    if [ -L "$current_link" ]; then
+        previous_release=$(readlink "$current_link")
+        case "$previous_release" in
+            "$releases_dir"/*) ;;
+            *) fail "refusing an unexpected current release link" ;;
+        esac
+        previous_binary=$previous_release/mihoterm
+        [ -x "$previous_binary" ] || fail "installed current release is not usable"
+        if [ "$previous_release" != "$release_dir" ]; then
+            previous_status=$($previous_binary status 2>/dev/null || true)
+            if [ -n "$previous_status" ]; then
+                previous_profile=$(printf '%s\n' "$previous_status" |
+                    sed -n 's/.* | profile \([A-Za-z0-9_-][A-Za-z0-9_-]*\) | mixed .*/\1/p')
+                [ -n "$previous_profile" ] ||
+                    fail "cannot determine the active profile before upgrade"
+                "$previous_binary" stop >/dev/null ||
+                    fail "could not stop the previous managed proxy; installation was preserved"
+                was_running=yes
+            fi
+        fi
     fi
     current_temporary=$app_root/.current-$$
     ln -s "$release_dir" "$current_temporary"
@@ -302,6 +430,26 @@ install_bundle() {
         rm -f "$command_link"
     fi
     ln -s "$current_link/mihoterm" "$command_link"
+
+    if [ "$was_running" = yes ]; then
+        if ! "$current_link/mihoterm" start "$previous_profile" >/dev/null; then
+            rollback_temporary=$app_root/.rollback-$$
+            ln -s "$previous_release" "$rollback_temporary"
+            mv -Tf "$rollback_temporary" "$current_link"
+            if "$current_link/mihoterm" start "$previous_profile" >/dev/null; then
+                fail "the new managed proxy failed to start; restored the previous release"
+            fi
+            fail "the new managed proxy failed to start and the previous release could not be restored"
+        fi
+        note "Replaced the running MihoTerm proxy with version $version."
+    fi
+
+    if [ "$autostart" = yes ]; then
+        register_autostart
+    else
+        remove_autostart
+        note "MihoTerm autostart is disabled."
+    fi
 
     if [ "$shell_integration" = yes ]; then
         append_profile_block "$profile_file"
@@ -333,10 +481,10 @@ case "${1:-install}" in
         [ "$#" -eq 0 ] || fail "usage: install.sh uninstall [--purge]"
         remove_installation "$purge"
         ;;
-    --no-shell)
+    --no-shell | --autostart | --no-autostart)
         install_bundle "$@"
         ;;
     *)
-        fail "usage: ./install.sh [--no-shell] | ./install.sh uninstall [--purge]"
+        fail "usage: ./install.sh [--no-shell] [--autostart|--no-autostart] | ./install.sh uninstall [--purge]"
         ;;
 esac

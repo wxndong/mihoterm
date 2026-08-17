@@ -50,6 +50,7 @@ for required in \
   "$bundle_dir/mihomo" \
   "$bundle_dir/install.sh" \
   "$bundle_dir/shell/mihoterm.sh" \
+  "$bundle_dir/systemd/mihoterm.service" \
   "$bundle_dir/LICENSE" \
   "$bundle_dir/THIRD_PARTY_NOTICES.md" \
   "$bundle_dir/THIRD-PARTY-LICENSES.html" \
@@ -83,7 +84,7 @@ env \
   XDG_CONFIG_HOME="$install_home/config" \
   XDG_STATE_HOME="$install_home/state" \
   XDG_RUNTIME_DIR="$install_home/runtime" \
-  "$bundle_dir/install.sh" --no-shell
+  "$bundle_dir/install.sh" --no-shell --no-autostart
 env \
   HOME="$install_home" \
   XDG_DATA_HOME="$install_home/data" \

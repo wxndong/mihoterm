@@ -11,6 +11,16 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Confirmed live switching between stored subscription profiles in the managed
   TUI while preserving the current loopback proxy endpoint.
+- Default-on installer choice for a per-user `mihoterm.service`, with explicit
+  `--autostart` and `--no-autostart` automation controls.
+- An explicit bilingual Global, Rule, and Direct mode chooser.
+
+### Changed
+
+- Cold managed sessions now default to Global mode without modifying stored
+  profiles; Global mode shows only the GLOBAL selector and its nodes.
+- Installing a different version safely stops the exact old managed process,
+  preserves its active profile, and restarts or rolls back atomically.
 
 ### Fixed
 

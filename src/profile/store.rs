@@ -371,6 +371,7 @@ mod tests {
         fs,
         os::unix::fs::PermissionsExt,
         path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -517,13 +518,15 @@ mod tests {
     }
 
     fn temporary_directory() -> PathBuf {
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock should follow epoch")
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "mihoterm-profile-test-{}-{nonce}",
-            std::process::id()
+            "mihoterm-profile-test-{}-{nonce}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ))
     }
 }

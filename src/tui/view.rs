@@ -3,10 +3,11 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState},
+    widgets::{Block, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState},
 };
 
 use crate::app::{App, Focus, InputMode, Page, StatusKind};
+use crate::mihomo::OperatingMode;
 
 const MIN_WIDTH: u16 = 52;
 const MIN_HEIGHT: u16 = 10;
@@ -57,12 +58,20 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         Page::Connections => render_connections(frame, vertical[1], app),
     }
     render_footer(frame, vertical[2], footer_lines);
+    if app.input_mode == InputMode::Mode {
+        render_mode_picker(frame, area, app);
+    }
 }
 
 fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let (version, mode) = app.snapshot.as_ref().map_or(("...", "..."), |snapshot| {
-        (snapshot.version.as_str(), snapshot.mode.as_str())
-    });
+    let (version, mode) = app.snapshot.as_ref().map_or_else(
+        || ("...", "...".to_owned()),
+        |snapshot| {
+            let mode = OperatingMode::from_api(&snapshot.mode)
+                .map_or_else(|| snapshot.mode.clone(), |mode| mode.label().to_owned());
+            (snapshot.version.as_str(), mode)
+        },
+    );
     let mut spans = vec![
         Span::styled(
             "MihoTerm",
@@ -71,7 +80,7 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(format!(
-            "  Mihomo {version}  mode {mode}  {}",
+            "  Mihomo {version}  模式 {mode}  {}",
             app.controller
         )),
     ];
@@ -183,6 +192,14 @@ fn render_groups(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let items = if items.is_empty()
+        && app.snapshot.as_ref().is_some_and(|snapshot| {
+            OperatingMode::from_api(&snapshot.mode) == Some(OperatingMode::Global)
+        }) {
+        vec![ListItem::new("GLOBAL unavailable")]
+    } else {
+        items
+    };
     let mut state = ListState::default().with_selected(app.selected_group_position());
     let block = pane_block(" Policy groups ", app.focus == Focus::Groups);
     let list = List::new(items)
@@ -239,6 +256,41 @@ fn render_proxies(frame: &mut Frame<'_>, area: Rect, app: &App) {
         );
 
     frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn render_mode_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let width = area.width.saturating_sub(4).min(62);
+    let height = 8_u16.min(area.height.saturating_sub(2));
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    let modes = [
+        OperatingMode::Global,
+        OperatingMode::Rule,
+        OperatingMode::Direct,
+    ];
+    let items = modes
+        .iter()
+        .map(|mode| ListItem::new(format!("{} — {}", mode.label(), mode.description())))
+        .collect::<Vec<_>>();
+    let selected = modes
+        .iter()
+        .position(|mode| *mode == app.mode_choice())
+        .unwrap_or_default();
+    let mut state = ListState::default().with_selected(Some(selected));
+    let list = List::new(items)
+        .block(Block::bordered().title(" 选择流量模式 "))
+        .highlight_symbol("> ")
+        .highlight_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
+    frame.render_widget(Clear, popup);
+    frame.render_stateful_widget(list, popup, &mut state);
 }
 
 fn render_profiles(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -317,6 +369,14 @@ fn footer_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             "Esc clear".into(),
         ],
         InputMode::Confirm => vec!["y/Enter confirm".into(), "n/Esc cancel".into()],
+        InputMode::Mode => vec![
+            "Arrows choose".into(),
+            "g global".into(),
+            "r rule".into(),
+            "d direct".into(),
+            "Enter continue".into(),
+            "Esc cancel".into(),
+        ],
         InputMode::ProfileId => vec![
             format!("Profile ID: {}", app.profile_id_input()),
             "Enter next".into(),
@@ -565,6 +625,46 @@ mod tests {
         assert!(text.contains("hidden ("));
         assert!(!text.contains("private"));
         assert!(!text.contains("never-render"));
+    }
+
+    #[test]
+    fn renders_an_explicit_bilingual_mode_picker() {
+        let mut app = App::new("http://127.0.0.1:9090".into());
+        app.apply_refresh(Ok(Snapshot {
+            version: "v1.19.29".into(),
+            mode: "global".into(),
+            groups: vec![PolicyGroup {
+                name: "GLOBAL".into(),
+                kind: "Selector".into(),
+                selected: Some("Proxy A".into()),
+                proxies: vec![ProxyRow {
+                    name: "Proxy A".into(),
+                    kind: "Shadowsocks".into(),
+                    alive: Some(true),
+                    delay_ms: Some(31),
+                }],
+            }],
+            connections: Vec::new(),
+            traffic_rate: None,
+        }));
+        app.handle_input(Input::Character('m'));
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+
+        terminal
+            .draw(|frame| render(frame, &app))
+            .expect("mode picker should render");
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(text.contains("Global"));
+        assert!(text.contains("Rule"));
+        assert!(text.contains("Direct"));
     }
 
     #[test]

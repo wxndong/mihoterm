@@ -14,7 +14,8 @@ contain:
   and exact core and data provenance.
 
 No Rust toolchain, dynamic application libraries, root access, systemd unit,
-or distribution-specific runtime is required.
+or distribution-specific runtime is required. A user-level systemd unit is an
+optional integration installed by default when accepted at the prompt.
 
 Choose the archive that matches `uname -m`:
 
@@ -42,12 +43,33 @@ $ exec "$SHELL" -l
 $ mihoterm
 ```
 
+The installer asks `Register MihoTerm to start automatically? [Y/n]` and
+pressing Enter selects yes. Automated installation can choose deterministically:
+
+```console
+$ ./install.sh --autostart
+$ ./install.sh --no-autostart
+```
+
+These options can be combined with `--no-shell`. Autostart uses
+`~/.config/systemd/user/mihoterm.service` and an owner-controlled
+`default.target.wants` link. On a server that must start Mihomo before the
+first SSH or Codex session, an administrator must additionally run
+`loginctl enable-linger USER`. The installer reports when lingering is off.
+
 The installer creates an immutable version directory under
 `$XDG_DATA_HOME/mihoterm/releases`, points
 `$XDG_DATA_HOME/mihoterm/current` at that version, and creates
 `~/.local/bin/mihoterm`. Existing non-MihoTerm files or links at those exact
 paths are rejected instead of overwritten. Re-running the same installer is
 idempotent; a same-version directory with different bytes is rejected.
+
+When installing a different version, the complete new immutable directory is
+prepared and verified first. If the old MihoTerm-managed proxy is running, the
+installer records its profile, stops only its verified PID, atomically switches
+`current`, and starts the new version with the same profile. If that start
+fails, `current` is restored and the previous version is restarted. Unrelated
+Mihomo and Codex processes are never searched or signalled.
 
 Small marker-delimited blocks are added to `~/.profile`, an existing
 `~/.bash_profile`, and `~/.bashrc`. The original files receive one
@@ -67,7 +89,7 @@ Use `--no-shell` to install the versioned files and command link without
 editing shell startup files:
 
 ```console
-$ ./install.sh --no-shell
+$ ./install.sh --no-shell --no-autostart
 $ export PATH="$HOME/.local/bin:$PATH"
 $ eval "$(mihoterm env)"
 ```

@@ -19,7 +19,7 @@ use rustix::{
 };
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::mihomo::ApiClient;
+use crate::mihomo::{ApiClient, OperatingMode};
 
 use super::{RuntimeError, config::build_managed_config};
 
@@ -113,6 +113,7 @@ impl ManagedRuntime {
             secret.expose_secret(),
             proxy_username.expose_secret(),
             proxy_password.expose_secret(),
+            OperatingMode::Global,
         )?;
         let configuration_path = runtime_dir.join(RUNTIME_CONFIG);
         write_private(&configuration_path, &configuration)?;

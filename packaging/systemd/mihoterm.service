@@ -1,0 +1,14 @@
+[Unit]
+Description=MihoTerm managed Mihomo proxy
+Documentation=https://github.com/wxndong/mihoterm
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/mihoterm start
+ExecStop=%h/.local/bin/mihoterm stop
+RemainAfterExit=yes
+TimeoutStartSec=45
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

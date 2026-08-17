@@ -17,7 +17,7 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::mihomo::ApiClient;
+use crate::mihomo::{ApiClient, OperatingMode};
 
 use super::{
     RuntimeError,
@@ -149,6 +149,14 @@ impl SessionManager {
         }
 
         let client = session.api_client(Duration::from_secs(15))?;
+        let mode = client
+            .configuration()
+            .await
+            .map_err(|_| RuntimeError::SessionReload)?
+            .mode
+            .as_deref()
+            .and_then(OperatingMode::from_api)
+            .unwrap_or(OperatingMode::Global);
         let record = &mut session.record;
         let controller_port = Url::parse(&record.controller_url)
             .ok()
@@ -162,6 +170,7 @@ impl SessionManager {
             &record.controller_secret,
             &record.proxy_username,
             &record.proxy_password,
+            mode,
         )?;
         let next = String::from_utf8(next).map_err(|_| RuntimeError::ConfigurationSerialization)?;
         let runtime_config = record.runtime_dir.join("runtime.yaml");
