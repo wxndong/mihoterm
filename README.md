@@ -34,6 +34,8 @@ network.
 - Import Mihomo YAML from a protected subscription URL file or local file.
 - Add, inspect in redacted form, replace, validate, update, and roll back named
   subscription profiles from the TUI or CLI.
+- Switch the managed TUI between stored profiles with a confirmed hot reload
+  and immediate dashboard refresh.
 - Keep one authenticated, user-owned Mihomo process running independently of
   the TUI, with private runtime files, random loopback ports, and exact-PID
   lifecycle control.
@@ -169,6 +171,8 @@ The TUI is keyboard-first:
 - `s` opens subscription profile management.
 - In the profile page, `a` adds a source, `e` replaces its URL, and `u`
   downloads and validates an update.
+- In the profile page, `Enter` confirms a live switch to the selected profile
+  and refreshes the dashboard without changing the managed proxy endpoint.
 - `q` or `Ctrl-C` closes the TUI without stopping the background proxy.
 
 See [Probe semantics](docs/probes.md) before interpreting delay results and

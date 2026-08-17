@@ -107,6 +107,23 @@ impl ApiClient {
         self.send_empty(operation, request).await
     }
 
+    pub async fn reload_configuration(&self, payload: &str) -> Result<(), ApiError> {
+        #[derive(Serialize)]
+        struct Configuration<'a> {
+            payload: &'a str,
+        }
+
+        let operation = "reload configuration";
+        let mut endpoint = self.endpoint_segments(operation, &["configs"])?;
+        endpoint.query_pairs_mut().append_pair("force", "true");
+        let request = self.authorize(
+            self.http
+                .request(Method::PUT, endpoint)
+                .json(&Configuration { payload }),
+        );
+        self.send_empty(operation, request).await
+    }
+
     pub async fn probe_delay(
         &self,
         proxy: &str,

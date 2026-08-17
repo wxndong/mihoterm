@@ -94,4 +94,10 @@ pub enum RuntimeError {
 
     #[error("failed to stop the managed proxy session")]
     SessionStop,
+
+    #[error("the managed proxy rejected the selected profile")]
+    SessionReload,
+
+    #[error("failed to roll back the managed profile switch")]
+    SessionSwitchRollback,
 }

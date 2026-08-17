@@ -9,7 +9,14 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- _Nothing yet._
+- Confirmed live switching between stored subscription profiles in the managed
+  TUI while preserving the current loopback proxy endpoint.
+
+### Fixed
+
+- Refresh dashboard policy groups and proxies immediately after a profile
+  switch, with rollback if Mihomo rejects or MihoTerm cannot persist the
+  replacement configuration.
 
 ## [0.1.0-alpha.3] - 2026-08-12
 

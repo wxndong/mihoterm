@@ -21,8 +21,10 @@ use crate::mihomo::ApiClient;
 
 use super::{
     RuntimeError,
+    config::build_managed_config,
     process::{
-        ManagedRuntime, prepare_runtime_root, random_hex, remove_runtime_directory, sync_directory,
+        ManagedRuntime, prepare_runtime_root, random_hex, read_private_profile,
+        remove_runtime_directory, sync_directory,
     },
 };
 
@@ -131,6 +133,69 @@ impl SessionManager {
         }
         remove_session_files(&self.root, &record)?;
         Ok(true)
+    }
+
+    pub async fn switch_profile(
+        &self,
+        profile: &str,
+        profile_path: &Path,
+    ) -> Result<ManagedSession, RuntimeError> {
+        let _lock = acquire_lock(&self.root)?;
+        let mut session = self
+            .active_locked()?
+            .ok_or(RuntimeError::SessionNotRunning)?;
+        if session.profile() == profile {
+            return Ok(session);
+        }
+
+        let client = session.api_client(Duration::from_secs(15))?;
+        let record = &mut session.record;
+        let controller_port = Url::parse(&record.controller_url)
+            .ok()
+            .and_then(|url| url.port())
+            .ok_or(RuntimeError::InvalidSession)?;
+        let source = read_private_profile(profile_path)?;
+        let next = build_managed_config(
+            &source,
+            controller_port,
+            record.mixed_port,
+            &record.controller_secret,
+            &record.proxy_username,
+            &record.proxy_password,
+        )?;
+        let next = String::from_utf8(next).map_err(|_| RuntimeError::ConfigurationSerialization)?;
+        let runtime_config = record.runtime_dir.join("runtime.yaml");
+        let previous = read_private_profile(&runtime_config)?;
+        let previous_text =
+            std::str::from_utf8(&previous).map_err(|_| RuntimeError::InvalidSession)?;
+        client
+            .reload_configuration(&next)
+            .await
+            .map_err(|_| RuntimeError::SessionReload)?;
+        if replace_private(&runtime_config, next.as_bytes()).is_err() {
+            let file_rolled_back = replace_private(&runtime_config, &previous).is_ok();
+            let core_rolled_back = client.reload_configuration(previous_text).await.is_ok();
+            return if file_rolled_back && core_rolled_back {
+                Err(RuntimeError::ConfigurationWrite)
+            } else {
+                Err(RuntimeError::SessionSwitchRollback)
+            };
+        }
+
+        let previous_profile = std::mem::replace(&mut record.profile, profile.to_owned());
+        if write_record(&self.root, record).is_err() {
+            record.profile = previous_profile;
+            let file_rolled_back = replace_private(&runtime_config, &previous).is_ok();
+            let core_rolled_back = client.reload_configuration(previous_text).await.is_ok();
+            let descriptor_rolled_back = write_record(&self.root, record).is_ok();
+            return if file_rolled_back && core_rolled_back && descriptor_rolled_back {
+                Err(RuntimeError::SessionWrite)
+            } else {
+                Err(RuntimeError::SessionSwitchRollback)
+            };
+        }
+
+        Ok(session)
     }
 
     fn active_locked(&self) -> Result<Option<ManagedSession>, RuntimeError> {
@@ -287,6 +352,28 @@ fn write_record(root: &Path, record: &StoredSession) -> Result<(), RuntimeError>
     result
 }
 
+fn replace_private(path: &Path, contents: &[u8]) -> Result<(), RuntimeError> {
+    let parent = path.parent().ok_or(RuntimeError::ConfigurationWrite)?;
+    let temporary = parent.join(format!(".runtime-{}.tmp", random_hex::<8>()?));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)
+            .map_err(|_| RuntimeError::ConfigurationWrite)?;
+        file.write_all(contents)
+            .and_then(|()| file.sync_all())
+            .map_err(|_| RuntimeError::ConfigurationWrite)?;
+        fs::rename(&temporary, path).map_err(|_| RuntimeError::ConfigurationWrite)?;
+        sync_directory(parent)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
 fn validate_record(root: &Path, record: &StoredSession) -> Result<(), RuntimeError> {
     let controller =
         Url::parse(&record.controller_url).map_err(|_| RuntimeError::InvalidSession)?;
@@ -420,8 +507,8 @@ mod tests {
     };
 
     use super::{
-        SESSION_SCHEMA_VERSION, StoredSession, process_start_ticks, shell_clear_owned, shell_quote,
-        validate_record, write_record,
+        SESSION_SCHEMA_VERSION, StoredSession, process_start_ticks, replace_private,
+        shell_clear_owned, shell_quote, validate_record, write_record,
     };
 
     #[test]
@@ -474,6 +561,37 @@ mod tests {
         let mut escaped = record;
         escaped.runtime_dir = root.join("../outside");
         assert!(validate_record(&root, &escaped).is_err());
+        fs::remove_dir_all(root).expect("fixture should be removed");
+    }
+
+    #[test]
+    fn runtime_configuration_replacement_is_atomic_and_private() {
+        let root = temporary_directory();
+        fs::create_dir(&root).expect("root should be created");
+        let path = root.join("runtime.yaml");
+        fs::write(&path, b"old").expect("fixture should be written");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .expect("fixture permissions should be set");
+
+        replace_private(&path, b"new").expect("configuration should be replaced");
+
+        assert_eq!(fs::read(&path).expect("configuration should read"), b"new");
+        assert_eq!(
+            fs::metadata(&path)
+                .expect("configuration metadata should exist")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::read_dir(&root)
+                .expect("root should read")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("entries should read")
+                .len(),
+            1
+        );
         fs::remove_dir_all(root).expect("fixture should be removed");
     }
 

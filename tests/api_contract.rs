@@ -175,6 +175,29 @@ async fn mode_update_uses_the_configs_patch() {
 }
 
 #[tokio::test]
+async fn configuration_reload_uses_forced_payload_update() {
+    let (controller, request) = spawn_json_once("204 No Content", "").await;
+    let client = ApiClient::new(&controller, None).expect("client should initialize");
+
+    client
+        .reload_configuration("proxies:\n  - name: Direct\n    type: direct\n")
+        .await
+        .expect("configuration should reload");
+    let request = request.await.expect("mock should capture request");
+    let (headers, body) = request
+        .split_once("\r\n\r\n")
+        .expect("request should contain a body separator");
+
+    assert!(headers.starts_with("PUT /api/configs?force=true HTTP/1.1"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).expect("body should be JSON"),
+        serde_json::json!({
+            "payload": "proxies:\n  - name: Direct\n    type: direct\n"
+        })
+    );
+}
+
+#[tokio::test]
 async fn probe_request_preserves_target_and_expected_status() {
     let (controller, request) = spawn_json_once("200 OK", r#"{"delay":47,"meanDelay":51}"#).await;
     let client = ApiClient::new(&controller, None).expect("client should initialize");

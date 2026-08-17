@@ -23,8 +23,12 @@ modifies a system service, or changes another Mihomo instance.
 
 `mihoterm`, `run`, `start`, `shell`, and `exec` start the managed process if it
 does not already exist. A subsequent command reuses the same verified session.
-Requesting a different profile while one is active fails visibly; stop the
-current session before selecting another profile.
+The managed TUI can switch to another stored profile through a confirmed,
+transactional hot reload. It preserves the loopback ports and credentials,
+updates the private session descriptor only after Mihomo accepts the new
+configuration, and restores the previous configuration if persistence fails.
+Requesting a different profile from a separate lifecycle command while one is
+active still fails visibly.
 
 Closing the TUI with `q` or `Ctrl-C` leaves the proxy running. This makes the
 TUI a control surface rather than the lifetime owner. `mihoterm stop` and
@@ -125,8 +129,9 @@ owner.
 - Relative local provider and rule files are resolved inside the isolated
   runtime home. Use HTTP providers or absolute owner-controlled paths until
   resource import is implemented.
-- Updating the active subscription profile does not hot-reload the running
-  core. Stop and restart after a validated update.
+- Updating the active subscription profile does not apply it immediately.
+  Switch away and back in the managed TUI, or stop and restart after a
+  validated update.
 - Transparent TUN capture is intentionally not available in the rootless
   default mode.
 

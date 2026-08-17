@@ -592,7 +592,7 @@ fn seed_bundled_data(executable: &Path, home: &Path) -> Result<(), RuntimeError>
     Ok(())
 }
 
-fn read_private_profile(path: &Path) -> Result<Vec<u8>, RuntimeError> {
+pub(super) fn read_private_profile(path: &Path) -> Result<Vec<u8>, RuntimeError> {
     let metadata = fs::metadata(path).map_err(|_| RuntimeError::ProfileRead)?;
     if !metadata.is_file() || metadata.permissions().mode() & 0o077 != 0 {
         return Err(RuntimeError::ProfileRead);
