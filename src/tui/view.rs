@@ -75,6 +75,9 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
             app.controller
         )),
     ];
+    if let Some(profile) = app.active_profile() {
+        spans.push(Span::raw(format!("  profile {profile}")));
+    }
     if let Some(snapshot) = app.snapshot.as_ref()
         && let Some(rate) = snapshot.traffic_rate
     {
@@ -331,6 +334,7 @@ fn footer_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         ],
         InputMode::Normal if app.page == Page::Profiles => vec![
             "Up/Down choose".into(),
+            "Enter switch".into(),
             "a add".into(),
             "e replace URL".into(),
             "u update".into(),

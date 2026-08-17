@@ -4,6 +4,7 @@ use crate::{
     mihomo::{ApiError, OperatingMode},
     probe::ProbeTarget,
     profile::{ProfileError, ProfileSource, ProfileSummary},
+    runtime::RuntimeError,
 };
 
 use super::{ConnectionRow, PolicyGroup, ProxyRow, Snapshot};
@@ -100,6 +101,15 @@ pub enum ProfileOperation {
     Add { id: String, source: ProfileSource },
     ReplaceSource { id: String, source: ProfileSource },
     Update { id: String },
+    Switch { id: String },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProfileOperationError {
+    #[error(transparent)]
+    Profile(#[from] ProfileError),
+    #[error(transparent)]
+    Runtime(#[from] RuntimeError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,12 +126,17 @@ pub enum ProfileOperationSuccess {
         id: String,
         profiles: Vec<ProfileSummary>,
     },
+    Switched {
+        id: String,
+        profiles: Vec<ProfileSummary>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PendingChange {
     SelectProxy { group: String, proxy: String },
     SetMode { mode: OperatingMode },
+    SwitchProfile { id: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,8 +266,8 @@ impl App {
 
     pub fn apply_profile_operation_result(
         &mut self,
-        result: Result<ProfileOperationSuccess, ProfileError>,
-    ) {
+        result: Result<ProfileOperationSuccess, ProfileOperationError>,
+    ) -> bool {
         self.operation_in_flight = false;
         match result {
             Ok(ProfileOperationSuccess::Added { id, profiles }) => {
@@ -276,6 +291,18 @@ impl App {
                     message: self.profile_change_message("Updated", &id),
                 };
             }
+            Ok(ProfileOperationSuccess::Switched { id, profiles }) => {
+                self.active_profile = Some(id.clone());
+                self.replace_profiles(profiles, &id);
+                self.page = Page::Dashboard;
+                self.focus = Focus::Groups;
+                self.search.clear();
+                self.status = StatusLine {
+                    kind: StatusKind::Info,
+                    message: format!("Switched to {id}; refreshing dashboard..."),
+                };
+                return true;
+            }
             Err(error) => {
                 self.status = StatusLine {
                     kind: StatusKind::Error,
@@ -283,6 +310,7 @@ impl App {
                 };
             }
         }
+        false
     }
 
     pub fn mark_refreshing(&mut self) {
@@ -618,6 +646,7 @@ impl App {
                     return Action::ManageProfile(operation);
                 }
             }
+            Input::Enter => self.begin_profile_switch(),
             _ => {}
         }
         Action::None
@@ -847,6 +876,33 @@ impl App {
         Some(ProfileOperation::Update { id })
     }
 
+    fn begin_profile_switch(&mut self) {
+        if self.operation_in_flight {
+            self.report_busy();
+            return;
+        }
+        let Some(id) = self.selected_profile().map(|profile| profile.id.clone()) else {
+            self.status = StatusLine {
+                kind: StatusKind::Error,
+                message: "No profile is selected".into(),
+            };
+            return;
+        };
+        if self.active_profile.as_deref() == Some(id.as_str()) {
+            self.status = StatusLine {
+                kind: StatusKind::Info,
+                message: format!("{id} is already active"),
+            };
+            return;
+        }
+        self.pending = Some(PendingChange::SwitchProfile { id: id.clone() });
+        self.input_mode = InputMode::Confirm;
+        self.status = StatusLine {
+            kind: StatusKind::Info,
+            message: format!("Switch the managed proxy to {id}?"),
+        };
+    }
+
     fn submit_profile_form(&mut self) -> Action {
         let Some(draft) = self.profile_draft.take() else {
             self.input_mode = InputMode::Normal;
@@ -932,6 +988,13 @@ impl App {
                             message: format!("Changing mode to {mode}..."),
                         };
                         Operation::SetMode { mode }
+                    }
+                    PendingChange::SwitchProfile { id } => {
+                        self.status = StatusLine {
+                            kind: StatusKind::Info,
+                            message: format!("Switching to {id}..."),
+                        };
+                        return Action::ManageProfile(ProfileOperation::Switch { id });
                     }
                 };
                 Action::Execute(operation)
@@ -1251,14 +1314,24 @@ mod tests {
             "managed".into(),
             Vec::new(),
             "default".into(),
-            vec![ProfileSummary {
-                id: "default".into(),
-                has_backup: false,
-                source: ProfileSourceSummary {
-                    kind: "https",
-                    display: "https://example.com/…".into(),
+            vec![
+                ProfileSummary {
+                    id: "default".into(),
+                    has_backup: false,
+                    source: ProfileSourceSummary {
+                        kind: "https",
+                        display: "https://example.com/…".into(),
+                    },
                 },
-            }],
+                ProfileSummary {
+                    id: "secondary".into(),
+                    has_backup: false,
+                    source: ProfileSourceSummary {
+                        kind: "https",
+                        display: "https://example.net/…".into(),
+                    },
+                },
+            ],
         );
         app.apply_refresh(Ok(snapshot()));
         app
@@ -1425,7 +1498,7 @@ mod tests {
         assert_eq!(app.handle_input(Input::Down), Action::None);
         assert_eq!(
             app.selected_profile().map(|profile| profile.id.as_str()),
-            Some("default")
+            Some("secondary")
         );
     }
 
@@ -1449,6 +1522,33 @@ mod tests {
         ));
         assert!(!debug.contains("do-not-print"));
         assert_eq!(app.subscription_input_len(), 0);
+    }
+
+    #[test]
+    fn profile_switch_requires_confirmation_and_refreshes_the_dashboard() {
+        let mut app = managed_app();
+        app.handle_input(Input::Character('s'));
+        app.handle_input(Input::Down);
+
+        assert_eq!(app.handle_input(Input::Enter), Action::None);
+        assert_eq!(app.input_mode, InputMode::Confirm);
+        assert_eq!(
+            app.handle_input(Input::Enter),
+            Action::ManageProfile(ProfileOperation::Switch {
+                id: "secondary".into(),
+            })
+        );
+
+        let profiles = app.profiles().to_vec();
+        let refresh = app.apply_profile_operation_result(Ok(ProfileOperationSuccess::Switched {
+            id: "secondary".into(),
+            profiles,
+        }));
+
+        assert!(refresh);
+        assert_eq!(app.page, Page::Dashboard);
+        assert_eq!(app.active_profile(), Some("secondary"));
+        assert!(app.status.message.contains("refreshing dashboard"));
     }
 
     #[test]

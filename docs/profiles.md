@@ -1,8 +1,9 @@
 # Profile Management
 
-MihoTerm stores validated Mihomo YAML as named profiles. Profile management is
+MihoTerm stores validated Mihomo YAML as named profiles. Profile storage is
 independent from attach mode: adding, updating, or rolling back a profile never
-reloads, signals, or changes a running Mihomo instance.
+reloads, signals, or changes a running Mihomo instance. An explicit confirmed
+switch in the managed TUI hot-reloads only MihoTerm's verified managed session.
 
 ## Sources
 
@@ -37,6 +38,7 @@ Profile IDs must match `[A-Za-z0-9][A-Za-z0-9_-]{0,39}`.
 In managed TUI mode, press `s` to open the profile page:
 
 - `Up` and `Down` select a profile.
+- `Enter` switches the running managed session to the selected profile after confirmation.
 - `a` adds a named HTTPS source.
 - `e` replaces the selected profile's HTTPS source.
 - `u` downloads and validates the selected stored source.
@@ -45,9 +47,12 @@ In managed TUI mode, press `s` to open the profile page:
 Subscription input is hidden. The list renders only the HTTPS origin, such as
 `https://example.com/…`; URL paths and query credentials are never drawn.
 Adding or replacing a source downloads and validates the complete profile
-before modifying stored files. Updating the active profile does not interrupt
-the current connection and takes effect after `mihoterm stop` followed by
-`mihoterm`.
+before modifying stored files. Switching profiles hot-reloads the isolated
+managed Mihomo process without changing its loopback ports or credentials,
+then refreshes the dashboard immediately. A rejected profile leaves the
+current profile active. Updating the active profile does not interrupt the
+current connection and takes effect after switching away and back, or after
+`mihoterm stop` followed by `mihoterm`.
 
 The equivalent CLI operations are:
 

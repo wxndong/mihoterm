@@ -11,10 +11,12 @@ use tokio::sync::mpsc;
 use crate::{
     app::{
         Action, App, Input, InputMode, Operation, OperationSuccess, ProfileOperation,
-        ProfileOperationSuccess, Snapshot, enrich_with_connections, fetch_snapshot,
+        ProfileOperationError, ProfileOperationSuccess, Snapshot, enrich_with_connections,
+        fetch_snapshot,
     },
     mihomo::{ApiClient, ApiError},
-    profile::{ProfileError, ProfileStore},
+    profile::ProfileStore,
+    runtime::SessionManager,
 };
 
 use terminal::TerminalSession;
@@ -28,11 +30,26 @@ pub enum TuiError {
     InputEnded,
 }
 
+pub struct ManagedProfiles {
+    store: ProfileStore,
+    session_manager: SessionManager,
+}
+
+impl ManagedProfiles {
+    #[must_use]
+    pub const fn new(store: ProfileStore, session_manager: SessionManager) -> Self {
+        Self {
+            store,
+            session_manager,
+        }
+    }
+}
+
 pub async fn run(
     client: ApiClient,
     mut app: App,
     refresh_interval: Duration,
-    profile_store: Option<ProfileStore>,
+    managed_profiles: Option<ManagedProfiles>,
 ) -> Result<(), TuiError> {
     let mut terminal = TerminalSession::enter()?;
     let mut events = EventStream::new();
@@ -50,9 +67,9 @@ pub async fn run(
         tokio::spawn(operation_worker(client, operation_receiver, result_sender));
     let (profile_sender, profile_receiver) = mpsc::channel(1);
     let (profile_result_sender, mut profile_result_receiver) = mpsc::channel(1);
-    let profile_worker = profile_store.map(|store| {
+    let profile_worker = managed_profiles.map(|managed| {
         tokio::spawn(profile_worker(
-            store,
+            managed,
             profile_receiver,
             profile_result_sender,
         ))
@@ -80,7 +97,9 @@ pub async fn run(
                     let Some(profile_result) = profile_result else {
                         return Err(TuiError::InputEnded);
                     };
-                    app.apply_profile_operation_result(profile_result);
+                    if app.apply_profile_operation_result(profile_result) {
+                        let _ = refresh_sender.try_send(());
+                    }
                 }
                 event = events.next() => {
                     let Some(event) = event else {
@@ -195,32 +214,52 @@ async fn operation_worker(
 }
 
 async fn profile_worker(
-    store: ProfileStore,
+    managed: ManagedProfiles,
     mut operation_receiver: mpsc::Receiver<ProfileOperation>,
-    result_sender: mpsc::Sender<Result<ProfileOperationSuccess, ProfileError>>,
+    result_sender: mpsc::Sender<Result<ProfileOperationSuccess, ProfileOperationError>>,
 ) {
+    let ManagedProfiles {
+        store,
+        session_manager,
+    } = managed;
     while let Some(operation) = operation_receiver.recv().await {
         let result = match operation {
             ProfileOperation::Add { id, source } => match store.add(&id, source).await {
                 Ok(()) => store
                     .list()
-                    .map(|profiles| ProfileOperationSuccess::Added { id, profiles }),
-                Err(error) => Err(error),
+                    .map(|profiles| ProfileOperationSuccess::Added { id, profiles })
+                    .map_err(ProfileOperationError::from),
+                Err(error) => Err(error.into()),
             },
             ProfileOperation::ReplaceSource { id, source } => {
                 match store.replace_source(&id, source).await {
                     Ok(()) => store
                         .list()
-                        .map(|profiles| ProfileOperationSuccess::SourceReplaced { id, profiles }),
-                    Err(error) => Err(error),
+                        .map(|profiles| ProfileOperationSuccess::SourceReplaced { id, profiles })
+                        .map_err(ProfileOperationError::from),
+                    Err(error) => Err(error.into()),
                 }
             }
             ProfileOperation::Update { id } => match store.update(&id).await {
                 Ok(()) => store
                     .list()
-                    .map(|profiles| ProfileOperationSuccess::Updated { id, profiles }),
-                Err(error) => Err(error),
+                    .map(|profiles| ProfileOperationSuccess::Updated { id, profiles })
+                    .map_err(ProfileOperationError::from),
+                Err(error) => Err(error.into()),
             },
+            ProfileOperation::Switch { id } => {
+                let result = store.profile_path(&id).map_err(ProfileOperationError::from);
+                match result {
+                    Ok(path) => match session_manager.switch_profile(&id, &path).await {
+                        Ok(_) => store
+                            .list()
+                            .map(|profiles| ProfileOperationSuccess::Switched { id, profiles })
+                            .map_err(ProfileOperationError::from),
+                        Err(error) => Err(error.into()),
+                    },
+                    Err(error) => Err(error),
+                }
+            }
         };
 
         if result_sender.send(result).await.is_err() {

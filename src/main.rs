@@ -164,6 +164,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 Duration::from_millis(timeout_ms),
                 Duration::from_millis(refresh_ms),
                 paths.profiles_dir(),
+                paths.runtime_dir().to_owned(),
             )
             .await
         }
@@ -176,6 +177,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 Duration::from_millis(timeout_ms),
                 Duration::from_millis(refresh_ms),
                 paths.profiles_dir(),
+                paths.runtime_dir().to_owned(),
             )
             .await
         }
@@ -330,18 +332,17 @@ async fn run_session_tui(
     request_timeout: Duration,
     refresh_interval: Duration,
     profiles_dir: PathBuf,
+    runtime_dir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client = session.api_client(request_timeout)?;
-    let display = format!(
-        "managed  profile {}  mixed 127.0.0.1:{}",
-        session.profile(),
-        session.mixed_port()
-    );
+    let display = format!("managed  mixed 127.0.0.1:{}", session.mixed_port());
     let active_profile = session.profile().to_owned();
     let store = ProfileStore::new(profiles_dir)?;
     let profiles = store.list()?;
     let app = App::with_managed_profiles(display, probes, active_profile, profiles);
-    tui::run(client, app, refresh_interval, Some(store)).await?;
+    let session_manager = SessionManager::new(&runtime_dir)?;
+    let managed_profiles = tui::ManagedProfiles::new(store, session_manager);
+    tui::run(client, app, refresh_interval, Some(managed_profiles)).await?;
     Ok(())
 }
 
