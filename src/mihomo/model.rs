@@ -37,6 +37,33 @@ impl OperatingMode {
             Self::Direct => Self::Rule,
         }
     }
+
+    #[must_use]
+    pub const fn previous(self) -> Self {
+        match self {
+            Self::Rule => Self::Direct,
+            Self::Global => Self::Rule,
+            Self::Direct => Self::Global,
+        }
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Rule => "规则 Rule",
+            Self::Global => "全局 Global",
+            Self::Direct => "直连 Direct",
+        }
+    }
+
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Rule => "按订阅规则和策略组分流",
+            Self::Global => "所有流量使用 GLOBAL 中选择的节点",
+            Self::Direct => "所有流量直接连接，不使用代理节点",
+        }
+    }
 }
 
 impl std::fmt::Display for OperatingMode {
@@ -236,6 +263,10 @@ mod tests {
         assert_eq!(OperatingMode::Rule.next(), OperatingMode::Global);
         assert_eq!(OperatingMode::Global.next(), OperatingMode::Direct);
         assert_eq!(OperatingMode::Direct.next(), OperatingMode::Rule);
+        assert_eq!(OperatingMode::Rule.previous(), OperatingMode::Direct);
+        assert_eq!(OperatingMode::Global.label(), "全局 Global");
+        assert_eq!(OperatingMode::Rule.label(), "规则 Rule");
+        assert_eq!(OperatingMode::Direct.label(), "直连 Direct");
         assert_eq!(OperatingMode::from_api("RULE"), Some(OperatingMode::Rule));
     }
 

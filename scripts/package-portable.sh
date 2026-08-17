@@ -121,7 +121,7 @@ staging="$(mktemp -d "$project_dir/target/package.XXXXXXXX")"
 trap 'rm -rf -- "$staging"' EXIT
 bundle_name="mihoterm-v${crate_version}-linux-${release_arch}"
 bundle_dir="$staging/$bundle_name"
-install -d -m 0755 "$bundle_dir/licenses"
+install -d -m 0755 "$bundle_dir/licenses" "$bundle_dir/systemd"
 install -m 0755 "$binary" "$bundle_dir/mihoterm"
 gzip -dc "$mihomo_archive" >"$bundle_dir/mihomo"
 chmod 0755 "$bundle_dir/mihomo"
@@ -132,6 +132,7 @@ install -m 0644 "$project_dir/packaging/PORTABLE_README.md" "$bundle_dir/README.
 install -m 0755 "$project_dir/packaging/install.sh" "$bundle_dir/install.sh"
 install -d -m 0755 "$bundle_dir/shell"
 install -m 0644 "$project_dir/packaging/shell/mihoterm.sh" "$bundle_dir/shell/mihoterm.sh"
+install -m 0644 "$project_dir/packaging/systemd/mihoterm.service" "$bundle_dir/systemd/mihoterm.service"
 install -m 0644 "$mihomo_license" "$bundle_dir/licenses/Mihomo-GPL-3.0.txt"
 install -m 0644 "$geodata_license" "$bundle_dir/licenses/meta-rules-dat-GPL-3.0.txt"
 while IFS=$'\t' read -r geodata_asset geodata_sha256; do

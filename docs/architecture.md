@@ -12,7 +12,7 @@ terminal view ──┘            │
                              ├─> profile store
                              └─> persistent session manager ─> Mihomo
 
-installer ─> user-local release + reversible Bash environment integration
+installer ─> user-local release + reversible Bash/service integration
 ```
 
 The terminal view renders immutable snapshots. Network, profile, and process
@@ -58,6 +58,10 @@ PID start time and command line.
     marker-delimited content that the installer owns.
 14. Uninstall preserves profiles unless the user explicitly requests
     `--purge`.
+15. Optional autostart invokes the same exact-PID managed lifecycle and never
+    establishes ownership from a process name.
+16. Version replacement prepares the new immutable release before stopping the
+    old managed process and rolls back if the new core cannot start.
 
 ## Module boundaries
 

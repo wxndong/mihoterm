@@ -3,9 +3,9 @@
 A tiny, fast, keyboard-first TUI for [Mihomo](https://github.com/MetaCubeX/mihomo)
 on Linux.
 
-> **Status:** v0.1.0-alpha.3 is an early x86_64 Linux prerelease. Managed mode,
-> user-local installation, and portable packaging have passed the project
-> release gates.
+> **Status:** v0.1.0-alpha.4 is the current prerelease candidate. Managed mode,
+> user-local installation, and portable packaging are validated locally before
+> each release.
 
 MihoTerm is an independent client for the Mihomo external-controller API. It
 does not provide proxy services, subscription content, or credentials.
@@ -39,6 +39,8 @@ network.
 - Keep one authenticated, user-owned Mihomo process running independently of
   the TUI, with private runtime files, random loopback ports, and exact-PID
   lifecycle control.
+- Optionally register that managed process with the per-user service manager;
+  the installer offers this by default and remains usable without systemd.
 - Export standard HTTP, HTTPS, and SOCKS proxy variables, open a proxied shell,
   or run one proxied command without exposing generated credentials.
 - Install into the user's home for invocation from any directory, add
@@ -82,12 +84,13 @@ $ exec "$SHELL" -l
 $ mihoterm
 ```
 
-The archive is self-contained, so no compiler or runtime environment is
+The installer asks whether MihoTerm should start automatically and defaults to
+yes. The archive is self-contained, so no compiler or runtime environment is
 needed. On first run, MihoTerm asks for an HTTPS subscription URL using a
 hidden terminal prompt, validates the downloaded profile, starts the bundled
 Mihomo core on authenticated dynamic loopback ports, and opens the TUI. `q`
 closes the TUI while the proxy remains available to the shell. No root access
-or system service is used.
+is used; automatic startup, when accepted, is a per-user service only.
 
 Running `./mihoterm` directly from the extracted directory remains supported
 as a no-install portable mode.
@@ -161,7 +164,8 @@ The TUI is keyboard-first:
 - `Up` and `Down` move within the focused list.
 - `Left`, `Right`, or `Tab` switch between policy groups and proxies.
 - `Enter` selects a proxy after confirmation.
-- `m` cycles to the next Mihomo mode after confirmation.
+- `m` opens an explicit chooser for Global, Rule, and Direct modes, with a
+  short description and confirmation.
 - `d` probes the selected proxy against the active target.
 - `p` cycles through Google, OpenAI, and GitHub probe targets.
 - `c` opens a read-only live connections view; the header shows real-time

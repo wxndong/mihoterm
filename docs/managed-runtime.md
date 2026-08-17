@@ -30,6 +30,11 @@ configuration, and restores the previous configuration if persistence fails.
 Requesting a different profile from a separate lifecycle command while one is
 active still fails visibly.
 
+A cold managed start derives `mode: global` regardless of the mode stored in
+the source profile. The source profile is never rewritten. A confirmed mode
+change applies to the current session, and a profile hot switch preserves that
+current runtime mode. Attach mode never changes an external controller's mode.
+
 Closing the TUI with `q` or `Ctrl-C` leaves the proxy running. This makes the
 TUI a control surface rather than the lifetime owner. `mihoterm stop` and
 `mihoterm uninstall` stop only the exact recorded process.
@@ -91,6 +96,19 @@ behalf. Any explicit `respect-rules` or `proxy-server-nameserver` value is
 preserved, including an explicitly empty node resolver list.
 
 The source profile is never rewritten.
+
+## Optional automatic startup
+
+The portable installer offers to register `mihoterm.service` with the current
+user's service manager and defaults to yes. The unit calls the same exact-PID
+`start` and `stop` lifecycle described above; it does not adopt or search for
+other Mihomo processes. `--no-autostart` keeps the original on-demand model.
+
+On a shared server, boot-before-login requires lingering to be enabled for the
+specific account by an administrator. Without lingering, the unit starts with
+the user's first login. Applications that must not start before the proxy can
+declare `After=mihoterm.service` and `Requires=mihoterm.service` in their own
+user-unit configuration.
 
 ## Application integration
 

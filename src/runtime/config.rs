@@ -1,5 +1,7 @@
 use yaml_serde::{Mapping, Number, Value};
 
+use crate::mihomo::OperatingMode;
+
 use super::RuntimeError;
 
 pub(super) fn build_managed_config(
@@ -9,6 +11,7 @@ pub(super) fn build_managed_config(
     secret: &str,
     proxy_username: &str,
     proxy_password: &str,
+    mode: OperatingMode,
 ) -> Result<Vec<u8>, RuntimeError> {
     std::str::from_utf8(profile).map_err(|_| RuntimeError::InvalidProfile)?;
     let mut value: Value =
@@ -28,6 +31,7 @@ pub(super) fn build_managed_config(
     set_number(root, "redir-port", 0);
     set_number(root, "tproxy-port", 0);
     set_number(root, "mixed-port", u64::from(mixed_port));
+    set_string(root, "mode", mode.as_str());
     set_bool(root, "allow-lan", false);
     set_string(root, "bind-address", "127.0.0.1");
     set_sequence(
@@ -135,6 +139,8 @@ fn string(value: &str) -> Value {
 mod tests {
     use yaml_serde::Value;
 
+    use crate::mihomo::OperatingMode;
+
     use super::build_managed_config;
 
     #[test]
@@ -188,11 +194,13 @@ proxies:
             "new-secret",
             "mihoterm-user",
             "proxy-password",
+            OperatingMode::Global,
         )
         .expect("configuration should be derived");
         let value: Value = yaml_serde::from_slice(&output).expect("output should be YAML");
 
         assert_eq!(value["mixed-port"].as_u64(), Some(41002));
+        assert_eq!(value["mode"].as_str(), Some("global"));
         assert_eq!(value["port"].as_u64(), Some(0));
         assert_eq!(value["socks-port"].as_u64(), Some(0));
         assert_eq!(value["redir-port"].as_u64(), Some(0));
@@ -231,6 +239,7 @@ proxies:
             "secret",
             "user",
             "password",
+            OperatingMode::Global,
         );
 
         assert!(result.is_err());
@@ -251,8 +260,16 @@ proxies:
     type: direct
 "#;
 
-        let output = build_managed_config(input, 41001, 41002, "secret", "user", "password")
-            .expect("configuration should be derived");
+        let output = build_managed_config(
+            input,
+            41001,
+            41002,
+            "secret",
+            "user",
+            "password",
+            OperatingMode::Global,
+        )
+        .expect("configuration should be derived");
         let value: Value = yaml_serde::from_slice(&output).expect("output should be YAML");
 
         assert_eq!(value["dns"]["respect-rules"].as_bool(), Some(false));
@@ -281,11 +298,20 @@ proxies:
     type: direct
 "#;
 
-        let output = build_managed_config(input, 41001, 41002, "secret", "user", "password")
-            .expect("configuration should be derived");
+        let output = build_managed_config(
+            input,
+            41001,
+            41002,
+            "secret",
+            "user",
+            "password",
+            OperatingMode::Rule,
+        )
+        .expect("configuration should be derived");
         let value: Value = yaml_serde::from_slice(&output).expect("output should be YAML");
 
         assert_eq!(value["dns"]["respect-rules"].as_bool(), Some(true));
+        assert_eq!(value["mode"].as_str(), Some("rule"));
         assert_eq!(
             value["dns"]["proxy-server-nameserver"][0].as_str(),
             Some("tls://1.1.1.1")
@@ -304,8 +330,16 @@ proxies:
     type: direct
 "#;
 
-        let output = build_managed_config(input, 41001, 41002, "secret", "user", "password")
-            .expect("configuration should be derived");
+        let output = build_managed_config(
+            input,
+            41001,
+            41002,
+            "secret",
+            "user",
+            "password",
+            OperatingMode::Global,
+        )
+        .expect("configuration should be derived");
         let value: Value = yaml_serde::from_slice(&output).expect("output should be YAML");
 
         assert_eq!(value["dns"]["respect-rules"].as_bool(), Some(false));
@@ -325,8 +359,16 @@ proxies:
     type: direct
 "#;
 
-        let output = build_managed_config(input, 41001, 41002, "secret", "user", "password")
-            .expect("configuration should be derived");
+        let output = build_managed_config(
+            input,
+            41001,
+            41002,
+            "secret",
+            "user",
+            "password",
+            OperatingMode::Global,
+        )
+        .expect("configuration should be derived");
         let value: Value = yaml_serde::from_slice(&output).expect("output should be YAML");
 
         assert!(
