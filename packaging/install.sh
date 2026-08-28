@@ -179,15 +179,19 @@ owned_command_link() {
 }
 
 owned_autostart_unit() {
-    [ -f "$autostart_unit" ] &&
-        [ ! -L "$autostart_unit" ] &&
-        {
-            cmp -s "$script_dir/systemd/mihoterm.service" "$autostart_unit" ||
-                {
-                    [ -f "$current_link/systemd/mihoterm.service" ] &&
-                        cmp -s "$current_link/systemd/mihoterm.service" "$autostart_unit"
-                }
-        }
+    [ -f "$autostart_unit" ] && [ ! -L "$autostart_unit" ] || return 1
+    cmp -s "$script_dir/systemd/mihoterm.service" "$autostart_unit" && return 0
+    if [ -f "$current_link/systemd/mihoterm.service" ] &&
+        cmp -s "$current_link/systemd/mihoterm.service" "$autostart_unit"; then
+        return 0
+    fi
+    for installed_unit in "$releases_dir"/*/systemd/mihoterm.service; do
+        if [ -f "$installed_unit" ] && [ ! -L "$installed_unit" ] &&
+            cmp -s "$installed_unit" "$autostart_unit"; then
+            return 0
+        fi
+    done
+    return 1
 }
 
 reload_user_manager() {
@@ -301,12 +305,14 @@ remove_installation() {
 install_bundle() {
     shell_integration=yes
     autostart=ask
+    defer_runtime_restart=no
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --no-shell) shell_integration=no ;;
             --autostart) autostart=yes ;;
             --no-autostart) autostart=no ;;
-            *) fail "usage: ./install.sh [--no-shell] [--autostart|--no-autostart]" ;;
+            --defer-runtime-restart) defer_runtime_restart=yes ;;
+            *) fail "usage: ./install.sh [--no-shell] [--autostart|--no-autostart] [--defer-runtime-restart]" ;;
         esac
         shift
     done
@@ -396,6 +402,8 @@ install_bundle() {
     previous_binary=
     previous_profile=
     was_running=no
+    runtime_stopped=no
+    deferred_upgrade=no
     if [ -e "$current_link" ] && [ ! -L "$current_link" ]; then
         fail "refusing to replace non-link path $current_link"
     fi
@@ -408,15 +416,20 @@ install_bundle() {
         previous_binary=$previous_release/mihoterm
         [ -x "$previous_binary" ] || fail "installed current release is not usable"
         if [ "$previous_release" != "$release_dir" ]; then
-            previous_status=$($previous_binary status 2>/dev/null || true)
-            if [ -n "$previous_status" ]; then
-                previous_profile=$(printf '%s\n' "$previous_status" |
-                    sed -n 's/.* | profile \([A-Za-z0-9_-][A-Za-z0-9_-]*\) | mixed .*/\1/p')
-                [ -n "$previous_profile" ] ||
-                    fail "cannot determine the active profile before upgrade"
-                "$previous_binary" stop >/dev/null ||
-                    fail "could not stop the previous managed proxy; installation was preserved"
-                was_running=yes
+            if [ "$defer_runtime_restart" = yes ]; then
+                deferred_upgrade=yes
+            else
+                previous_status=$($previous_binary status 2>/dev/null || true)
+                if [ -n "$previous_status" ]; then
+                    was_running=yes
+                    previous_profile=$(printf '%s\n' "$previous_status" |
+                        sed -n 's/.* | profile \([A-Za-z0-9_-][A-Za-z0-9_-]*\) | mixed .*/\1/p')
+                    [ -n "$previous_profile" ] ||
+                        fail "cannot determine the active profile before upgrade"
+                    "$previous_binary" stop >/dev/null ||
+                        fail "could not stop the previous managed proxy; installation was preserved"
+                    runtime_stopped=yes
+                fi
             fi
         fi
     fi
@@ -431,7 +444,7 @@ install_bundle() {
     fi
     ln -s "$current_link/mihoterm" "$command_link"
 
-    if [ "$was_running" = yes ]; then
+    if [ "$runtime_stopped" = yes ]; then
         if ! "$current_link/mihoterm" start "$previous_profile" >/dev/null; then
             rollback_temporary=$app_root/.rollback-$$
             ln -s "$previous_release" "$rollback_temporary"
@@ -442,6 +455,9 @@ install_bundle() {
             fail "the new managed proxy failed to start and the previous release could not be restored"
         fi
         note "Replaced the running MihoTerm proxy with version $version."
+    elif [ "$deferred_upgrade" = yes ]; then
+        note "Installed MihoTerm $version with the runtime restart deferred."
+        note "The installer did not inspect, stop, or start the previous runtime; cut over with an explicit stop/start or service restart."
     fi
 
     if [ "$autostart" = yes ]; then
@@ -481,10 +497,10 @@ case "${1:-install}" in
         [ "$#" -eq 0 ] || fail "usage: install.sh uninstall [--purge]"
         remove_installation "$purge"
         ;;
-    --no-shell | --autostart | --no-autostart)
+    --no-shell | --autostart | --no-autostart | --defer-runtime-restart)
         install_bundle "$@"
         ;;
     *)
-        fail "usage: ./install.sh [--no-shell] [--autostart|--no-autostart] | ./install.sh uninstall [--purge]"
+        fail "usage: ./install.sh [--no-shell] [--autostart|--no-autostart] [--defer-runtime-restart] | ./install.sh uninstall [--purge]"
         ;;
 esac

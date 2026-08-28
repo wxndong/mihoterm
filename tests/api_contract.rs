@@ -198,6 +198,20 @@ async fn configuration_reload_uses_forced_payload_update() {
 }
 
 #[tokio::test]
+async fn listener_preserving_reload_uses_non_forced_payload_update() {
+    let (controller, request) = spawn_json_once("204 No Content", "").await;
+    let client = ApiClient::new(&controller, None).expect("client should initialize");
+
+    client
+        .reload_configuration_preserving_listeners("proxies: []\n")
+        .await
+        .expect("configuration should reload in place");
+    let request = request.await.expect("mock should capture request");
+
+    assert!(request.starts_with("PUT /api/configs?force=false HTTP/1.1"));
+}
+
+#[tokio::test]
 async fn probe_request_preserves_target_and_expected_status() {
     let (controller, request) = spawn_json_once("200 OK", r#"{"delay":47,"meanDelay":51}"#).await;
     let client = ApiClient::new(&controller, None).expect("client should initialize");

@@ -44,8 +44,15 @@ budget. Set `MIHOTERM_BUILD_JOBS` explicitly only when a different limit is
 appropriate.
 
 The script checks formatting, linting, tests, documentation, the release build,
-an isolated install/idempotency/uninstall lifecycle, and Git whitespace. If
-`gitleaks` is installed, it also scans repository history.
+an isolated install/idempotency/uninstall lifecycle, Bash autostart/resync
+behavior, and Git whitespace. If `gitleaks` is installed, it also scans
+repository history.
+
+Installer upgrade coverage must exercise `--defer-runtime-restart` with a live
+sentinel process. The current release link and owned service file must advance,
+while the complete status, process PID, mixed port, controller port, and
+lifecycle log prove that no status, stop, or start command was issued by the
+installer.
 
 Live integration tests must:
 
@@ -62,6 +69,17 @@ available. Then run `mihoterm stop` and confirm that the child, both listeners,
 the descriptor, and the per-run directory disappear. Also confirm that any
 pre-existing Mihomo PID is unchanged.
 
+Supervisor fault injection must additionally terminate only the isolated child
+PID, then verify that the supervisor PID, session identifier, mixed port, and
+credentials remain stable while a new child PID becomes ready. Test profile
+refresh through `profile update ID --apply` and confirm that its immediate
+post-reload check recovers Codex reachability through a known-good or
+profile-authored fallback without enumerating arbitrary leaf proxies. Run
+`doctor` afterward as an independent health assertion.
+Hold the session and desired-state locks from separate descriptors and verify
+that foreground inspection returns a busy error without waiting, then releases
+normally after each holder exits.
+
 ## Configuration locations
 
 MihoTerm follows the XDG base directory specification:
@@ -69,7 +87,8 @@ MihoTerm follows the XDG base directory specification:
 - configuration: `$XDG_CONFIG_HOME/mihoterm`
 - state: `$XDG_STATE_HOME/mihoterm`
 - cache: `$XDG_CACHE_HOME/mihoterm`
-- runtime data: `$XDG_RUNTIME_DIR/mihoterm`
+- runtime data: `$XDG_RUNTIME_DIR/mihoterm`, the secure conventional
+  `/run/user/UID/mihoterm`, or a durable state fallback when neither is usable
 
 Environment variables use the `MIHOTERM_` prefix.
 

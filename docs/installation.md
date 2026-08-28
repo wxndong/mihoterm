@@ -57,6 +57,21 @@ These options can be combined with `--no-shell`. Autostart uses
 first SSH or Codex session, an administrator must additionally run
 `loginctl enable-linger USER`. The installer reports when lingering is off.
 
+For a staged fleet upgrade, install the new immutable release and update the
+command, shell, and service files without interrupting an active managed proxy:
+
+```console
+$ ./install.sh --autostart --defer-runtime-restart
+```
+
+The installation leaves the running managed process, its supervisor when
+present, session identifier, credentials, and loopback ports unchanged. The
+new runtime becomes active after an explicit `mihoterm stop` followed by
+`mihoterm start`, a service restart, or the next service start. The option
+does not invoke the previous release at all, so even an unhealthy or locked
+older manager cannot block the install. It never adopts or preserves an
+unrelated Mihomo process.
+
 The installer creates an immutable version directory under
 `$XDG_DATA_HOME/mihoterm/releases`, points
 `$XDG_DATA_HOME/mihoterm/current` at that version, and creates
@@ -79,7 +94,9 @@ Small marker-delimited blocks are added to `~/.profile`, an existing
 - synchronizes `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and their lowercase
   forms after the proxy starts or stops;
 - restores any proxy variables that existed before MihoTerm took control; and
-- loads an already-running MihoTerm session in a newly opened Bash shell.
+- loads an already-running MihoTerm session in a newly opened Bash shell; and
+- starts a missing session once when the user-enabled autostart link exists,
+  while preserving an explicit `mihoterm stop`.
 
 It never writes a port, username, password, or subscription URL into a shell
 startup file. Those values are generated per session and read from an

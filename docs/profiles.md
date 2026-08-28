@@ -1,9 +1,9 @@
 # Profile Management
 
 MihoTerm stores validated Mihomo YAML as named profiles. Profile storage is
-independent from attach mode: adding, updating, or rolling back a profile never
-reloads, signals, or changes a running Mihomo instance. An explicit confirmed
-switch in the managed TUI hot-reloads only MihoTerm's verified managed session.
+independent from attach mode: profile operations never reload, signal, or
+change an attached Mihomo instance. Updating or replacing the active profile
+in the managed TUI hot-reloads only MihoTerm's verified managed session.
 
 ## Sources
 
@@ -50,24 +50,32 @@ Adding or replacing a source downloads and validates the complete profile
 before modifying stored files. Switching profiles hot-reloads the isolated
 managed Mihomo process without changing its loopback ports or credentials,
 then refreshes the dashboard immediately. A rejected profile leaves the
-current profile active. Updating the active profile does not interrupt the
-current connection and takes effect after switching away and back, or after
-`mihoterm stop` followed by `mihoterm`.
+current profile active. Updating or replacing the active profile uses Mihomo's
+non-forced reload path, preserves loopback listeners, and takes effect
+immediately. It then probes the reloaded route and, when needed, tries only
+remembered healthy choices or fallback/URL-test groups authored by the profile.
+It never enumerates arbitrary leaf proxies. Any persistence or reload failure
+restores the previous stored and runtime revision.
 
 The equivalent CLI operations are:
 
 ```console
 $ mihoterm profile list
 $ mihoterm profile update primary
+$ mihoterm profile update primary --apply
 $ mihoterm profile rollback primary
 $ mihoterm profile path primary
 ```
 
 `update` reloads the stored source, validates the complete result, writes it
 through private temporary files, and atomically replaces each stored file.
+`--apply` additionally applies that revision to the managed session without
+recreating listeners, runs the bounded post-reload recovery path, and rolls
+back the stored revision if the runtime rejects it. The TUI performs this apply
+automatically for the active profile.
 Replacing a source follows the same validate-before-write contract. The
-previous validated YAML becomes the rollback target. `rollback` swaps those
-two YAML versions, so the operation can be reversed once more if needed.
+previous validated YAML and source descriptor become the rollback target.
+`rollback` swaps both pairs, so the operation can be reversed once more.
 
 Mutating commands acquire a non-blocking advisory lock. A concurrent command
 fails visibly instead of racing another update.

@@ -52,17 +52,37 @@ _mihoterm_clear_owned_proxy_environment() {
     _mihoterm_restore_proxy_environment
 }
 
+_mihoterm_autostart_enabled() {
+    local _mihoterm_autostart_result _mihoterm_systemd_config
+    _mihoterm_systemd_config=${XDG_CONFIG_HOME:-"$HOME/.config"}/systemd/user
+    [ -L "$_mihoterm_systemd_config/default.target.wants/mihoterm.service" ]
+    _mihoterm_autostart_result=$?
+    return "$_mihoterm_autostart_result"
+}
+
 _mihoterm_sync_proxy_environment() {
+    local _mihoterm_allow_start _mihoterm_environment
+    _mihoterm_allow_start=${1:-0}
     [ -x "$_mihoterm_binary" ] || return 0
     _mihoterm_environment=$("$_mihoterm_binary" env --if-running 2>/dev/null) ||
         return 0
+    case "$_mihoterm_environment" in
+        *"export MIHOTERM_PROXY_SESSION="*)
+            ;;
+        *)
+            if [ "$_mihoterm_allow_start" = 1 ] && _mihoterm_autostart_enabled; then
+                "$_mihoterm_binary" start >/dev/null 2>&1 || :
+                _mihoterm_environment=$("$_mihoterm_binary" env --if-running 2>/dev/null) ||
+                    return 0
+            fi
+            ;;
+    esac
     case "$_mihoterm_environment" in
         *"export MIHOTERM_PROXY_SESSION="*)
             _mihoterm_save_proxy_environment
             ;;
     esac
     eval "$_mihoterm_environment"
-    unset _mihoterm_environment
     if [ -z "${MIHOTERM_PROXY_SESSION-}" ]; then
         _mihoterm_restore_proxy_environment
     fi
@@ -88,15 +108,19 @@ mihoterm() {
             unset -f _mihoterm_restore_proxy_environment
             unset -f _mihoterm_clear_owned_proxy_environment
             unset -f _mihoterm_sync_proxy_environment
+            unset -f _mihoterm_autostart_enabled
             unset _mihoterm_binary
             ;;
         env | exec | shell | attach | status | profile | --help | -h | --version | -V)
             ;;
+        stop)
+            _mihoterm_sync_proxy_environment 0
+            ;;
         *)
-            _mihoterm_sync_proxy_environment
+            _mihoterm_sync_proxy_environment 1
             ;;
     esac
     return "$_mihoterm_status"
 }
 
-_mihoterm_sync_proxy_environment
+_mihoterm_sync_proxy_environment 1

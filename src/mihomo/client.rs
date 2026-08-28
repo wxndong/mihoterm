@@ -108,6 +108,21 @@ impl ApiClient {
     }
 
     pub async fn reload_configuration(&self, payload: &str) -> Result<(), ApiError> {
+        self.reload_configuration_with_force(payload, true).await
+    }
+
+    pub async fn reload_configuration_preserving_listeners(
+        &self,
+        payload: &str,
+    ) -> Result<(), ApiError> {
+        self.reload_configuration_with_force(payload, false).await
+    }
+
+    async fn reload_configuration_with_force(
+        &self,
+        payload: &str,
+        force: bool,
+    ) -> Result<(), ApiError> {
         #[derive(Serialize)]
         struct Configuration<'a> {
             payload: &'a str,
@@ -115,7 +130,9 @@ impl ApiClient {
 
         let operation = "reload configuration";
         let mut endpoint = self.endpoint_segments(operation, &["configs"])?;
-        endpoint.query_pairs_mut().append_pair("force", "true");
+        endpoint
+            .query_pairs_mut()
+            .append_pair("force", if force { "true" } else { "false" });
         let request = self.authorize(
             self.http
                 .request(Method::PUT, endpoint)

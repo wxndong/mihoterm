@@ -12,6 +12,7 @@ cargo test --all-targets --all-features --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --locked
 cargo build --release --locked
 ./scripts/test-installer.sh
+./scripts/test-shell-integration.sh
 git diff --check
 
 if command -v gitleaks >/dev/null 2>&1; then

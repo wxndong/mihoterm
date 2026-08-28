@@ -3,10 +3,10 @@
 use std::{
     env,
     ffi::OsString,
-    io,
+    fs, io,
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, ExitCode, Stdio},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use clap::Parser;
@@ -15,14 +15,16 @@ use mihoterm::{
     app::{App, fetch_snapshot},
     cli::{Cli, Command, DEFAULT_CONTROLLER, ProfileCommand},
     config::{AppPaths, load_controller_secret, load_probe_targets},
+    doctor::stale_clients,
     mihomo::ApiClient,
     onboarding,
     probe::{ProbeTarget, select_probe_targets},
     profile::{ProfileSource, ProfileStore},
     runtime::{
-        ManagedSession, RuntimeError, SessionManager, default_mihomo_executable,
-        exec_managed_child, shell_clear_owned,
+        HealthStatus, ManagedSession, RecoveryOutcome, RuntimeError, SessionManager,
+        default_mihomo_executable, detach_supervisor, exec_managed_child, shell_clear_owned,
     },
+    state::{DesiredStateStore, profile_digest},
     tui,
 };
 use tokio::signal::unix::{SignalKind, signal};
@@ -38,6 +40,7 @@ async fn main() -> ExitCode {
                 | Command::Uninstall { .. }
                 | Command::RuntimeChild { .. }
                 | Command::SessionStart { .. }
+                | Command::Supervise { .. }
         )
     );
     let result = if signal_passthrough {
@@ -85,9 +88,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             home,
             config,
             test,
-            detached,
         }) => {
-            exec_managed_child(parent_pid, &binary, &home, &config, test, detached)?;
+            exec_managed_child(parent_pid, &binary, &home, &config, test)?;
             unreachable!("a successful child exec does not return");
         }
         Some(Command::SessionStart {
@@ -95,9 +97,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             profile_path,
             mihomo,
             runtime_root,
+            state_root,
         }) => {
-            let manager = SessionManager::new(&runtime_root)?;
-            manager.start(&profile, &profile_path, &mihomo).await?;
+            detach_supervisor()?;
+            let manager = SessionManager::with_state(&runtime_root, &state_root)?;
+            manager.supervise(&profile, &profile_path, &mihomo).await?;
             return Ok(());
         }
         Some(Command::Uninstall { purge }) => return run_uninstaller(purge),
@@ -113,7 +117,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     paths.prepare_private_state()?;
 
     match command {
-        Some(Command::Profile { command }) => run_profile(command, paths.profiles_dir()).await,
+        Some(Command::Profile { command }) => run_profile(command, &paths).await,
         Some(Command::Start { profile, mihomo }) => {
             let session =
                 start_session_direct(profile.as_deref(), mihomo.as_deref(), &paths).await?;
@@ -125,8 +129,22 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             );
             Ok(())
         }
+        Some(Command::Supervise { profile, mihomo }) => {
+            let store = ProfileStore::new(paths.profiles_dir())?;
+            let profile =
+                resolve_managed_profile(&store, profile.as_deref(), paths.state_dir()).await?;
+            let profile_path = store.profile_path(&profile)?;
+            let mihomo = mihomo
+                .as_deref()
+                .map(Path::to_owned)
+                .unwrap_or_else(default_mihomo_executable);
+            managed_session_manager(&paths)?
+                .supervise(&profile, &profile_path, &mihomo)
+                .await?;
+            Ok(())
+        }
         Some(Command::Stop) => {
-            let manager = SessionManager::new(paths.runtime_dir())?;
+            let manager = managed_session_manager(&paths)?;
             if manager.stop().await? {
                 println!("Stopped the managed proxy.");
             } else {
@@ -135,7 +153,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Some(Command::Env { if_running }) => {
-            let manager = SessionManager::new(paths.runtime_dir())?;
+            let manager = managed_session_manager(&paths)?;
             match manager.active()? {
                 Some(session) => print!("{}", session.proxy_environment().shell_exports()),
                 None if if_running => print!("{}", shell_clear_owned()),
@@ -165,6 +183,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 Duration::from_millis(refresh_ms),
                 paths.profiles_dir(),
                 paths.runtime_dir().to_owned(),
+                paths.state_dir().to_owned(),
             )
             .await
         }
@@ -178,6 +197,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 Duration::from_millis(refresh_ms),
                 paths.profiles_dir(),
                 paths.runtime_dir().to_owned(),
+                paths.state_dir().to_owned(),
             )
             .await
         }
@@ -195,7 +215,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Some(Command::Status) if controller.is_none() => {
-            let manager = SessionManager::new(paths.runtime_dir())?;
+            let manager = managed_session_manager(&paths)?;
             let session = manager.active()?.ok_or(RuntimeError::SessionNotRunning)?;
             let snapshot =
                 fetch_snapshot(&session.api_client(Duration::from_millis(timeout_ms))?).await?;
@@ -225,6 +245,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             );
             Ok(())
         }
+        Some(Command::Doctor { repair }) => run_doctor(&paths, repair).await,
         Some(Command::Probe { proxy, targets }) => {
             let probes = load_probe_targets(paths.config_file(), config_is_explicit)?;
             let probes = select_probe_targets(&probes, &targets)?;
@@ -233,7 +254,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 let secret = load_controller_secret(secret_file.as_deref())?;
                 ApiClient::with_timeout(controller, secret, request_timeout)?
             } else {
-                let manager = SessionManager::new(paths.runtime_dir())?;
+                let manager = managed_session_manager(&paths)?;
                 let session = manager.active()?.ok_or(RuntimeError::SessionNotRunning)?;
                 session.api_client(request_timeout)?
             };
@@ -264,24 +285,7 @@ async fn start_session_direct(
     mihomo: Option<&Path>,
     paths: &AppPaths,
 ) -> Result<ManagedSession, Box<dyn std::error::Error>> {
-    let manager = SessionManager::new(paths.runtime_dir())?;
-    if let Some(session) = manager.active()? {
-        if profile.is_none_or(|requested| requested == session.profile()) {
-            return Ok(session);
-        }
-        return Err(RuntimeError::SessionProfileConflict.into());
-    }
-
-    let store = ProfileStore::new(paths.profiles_dir())?;
-    let profile = onboarding::resolve_profile(&store, profile).await?;
-    let profile_path = store.profile_path(&profile)?;
-    let mihomo = mihomo
-        .map(Path::to_owned)
-        .unwrap_or_else(default_mihomo_executable);
-    manager
-        .start(&profile, &profile_path, &mihomo)
-        .await
-        .map_err(Into::into)
+    ensure_session(profile, mihomo, paths).await
 }
 
 async fn ensure_session(
@@ -289,21 +293,31 @@ async fn ensure_session(
     mihomo: Option<&Path>,
     paths: &AppPaths,
 ) -> Result<ManagedSession, Box<dyn std::error::Error>> {
-    let manager = SessionManager::new(paths.runtime_dir())?;
-    if let Some(session) = manager.active()? {
-        if profile.is_none_or(|requested| requested == session.profile()) {
-            return Ok(session);
+    let manager = managed_session_manager(paths)?;
+    let lock_deadline = Instant::now() + Duration::from_secs(50);
+    loop {
+        match manager.active() {
+            Ok(Some(session)) => {
+                if profile.is_none_or(|requested| requested == session.profile()) {
+                    return Ok(session);
+                }
+                return Err(RuntimeError::SessionProfileConflict.into());
+            }
+            Ok(None) => break,
+            Err(RuntimeError::SessionBusy) if Instant::now() < lock_deadline => {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(error) => return Err(error.into()),
         }
-        return Err(RuntimeError::SessionProfileConflict.into());
     }
 
     let store = ProfileStore::new(paths.profiles_dir())?;
-    let profile = onboarding::resolve_profile(&store, profile).await?;
+    let profile = resolve_managed_profile(&store, profile, paths.state_dir()).await?;
     let profile_path = store.profile_path(&profile)?;
     let mihomo = mihomo
         .map(Path::to_owned)
         .unwrap_or_else(default_mihomo_executable);
-    let status = ProcessCommand::new(env::current_exe()?)
+    let mut child = ProcessCommand::new(env::current_exe()?)
         .arg("__session-start")
         .arg("--profile")
         .arg(&profile)
@@ -313,17 +327,43 @@ async fn ensure_session(
         .arg(mihomo)
         .arg("--runtime-root")
         .arg(paths.runtime_dir())
+        .arg("--state-root")
+        .arg(paths.state_dir())
         .stdin(Stdio::null())
-        .status()?;
-    if !status.success() {
-        return Err(RuntimeError::UnexpectedExit {
-            code: status.code(),
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(50);
+    let mut launcher_status = None;
+    loop {
+        if launcher_status.is_none() {
+            launcher_status = child.try_wait()?;
         }
-        .into());
+        match manager.active() {
+            Ok(Some(session)) => {
+                drop(child);
+                return Ok(session);
+            }
+            Ok(None) => {
+                if let Some(status) = launcher_status.as_ref() {
+                    return Err(RuntimeError::UnexpectedExit {
+                        code: status.code(),
+                    }
+                    .into());
+                }
+            }
+            Err(RuntimeError::SessionBusy) => {}
+            Err(error) => return Err(error.into()),
+        }
+        if Instant::now() >= deadline {
+            if launcher_status.is_none() {
+                let _ = child.kill();
+                let _ = child.try_wait();
+            }
+            return Err(RuntimeError::ControllerUnavailable.into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    manager
-        .active()?
-        .ok_or_else(|| RuntimeError::SessionNotRunning.into())
 }
 
 async fn run_session_tui(
@@ -333,6 +373,7 @@ async fn run_session_tui(
     refresh_interval: Duration,
     profiles_dir: PathBuf,
     runtime_dir: PathBuf,
+    state_dir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client = session.api_client(request_timeout)?;
     let display = format!("managed  mixed 127.0.0.1:{}", session.mixed_port());
@@ -340,10 +381,192 @@ async fn run_session_tui(
     let store = ProfileStore::new(profiles_dir)?;
     let profiles = store.list()?;
     let app = App::with_managed_profiles(display, probes, active_profile, profiles);
-    let session_manager = SessionManager::new(&runtime_dir)?;
-    let managed_profiles = tui::ManagedProfiles::new(store, session_manager);
+    let session_manager = SessionManager::with_state(&runtime_dir, &state_dir)?;
+    let desired = DesiredStateStore::new(state_dir)?;
+    let managed_profiles = tui::ManagedProfiles::new(store, session_manager, desired);
     tui::run(client, app, refresh_interval, Some(managed_profiles)).await?;
     Ok(())
+}
+
+fn managed_session_manager(paths: &AppPaths) -> Result<SessionManager, RuntimeError> {
+    SessionManager::with_state(paths.runtime_dir(), paths.state_dir())
+}
+
+async fn resolve_managed_profile(
+    store: &ProfileStore,
+    requested: Option<&str>,
+    state_root: &Path,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(profile) = requested {
+        return Ok(profile.to_owned());
+    }
+    let desired = DesiredStateStore::new(state_root.to_owned())?.load()?;
+    if let Some(profile) = desired.active_profile
+        && store.profile_path(&profile).is_ok()
+    {
+        return Ok(profile);
+    }
+    onboarding::resolve_profile(store, None)
+        .await
+        .map_err(Into::into)
+}
+
+async fn run_doctor(paths: &AppPaths, repair: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let manager = managed_session_manager(paths)?;
+    let mut repair_outcome = None;
+    if repair {
+        let _ = ensure_session(None, None, paths).await?;
+        let outcome = manager.repair_once(true).await?;
+        if outcome == RecoveryOutcome::RestartRequested {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while Instant::now() < deadline {
+                if manager
+                    .health_report()
+                    .await
+                    .is_ok_and(|report| report.status != HealthStatus::ControllerUnavailable)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+        repair_outcome = Some(outcome);
+    }
+
+    println!(
+        "runtime storage: {}{}",
+        paths.runtime_dir().display(),
+        if paths.runtime_uses_state_fallback() {
+            " (durable state fallback)"
+        } else {
+            ""
+        }
+    );
+    if let Some(outcome) = repair_outcome {
+        println!("repair: {}", recovery_label(outcome));
+    }
+
+    let mut critical_issue = false;
+    let session = match manager.active() {
+        Ok(Some(session)) => {
+            println!(
+                "managed session: running | profile {} | mixed 127.0.0.1:{} | pid {}",
+                session.profile(),
+                session.mixed_port(),
+                session.pid()
+            );
+            Some(session)
+        }
+        Ok(None) => {
+            println!("managed session: stopped");
+            critical_issue = true;
+            None
+        }
+        Err(error) => {
+            println!("managed session: invalid ({error})");
+            critical_issue = true;
+            None
+        }
+    };
+
+    match DesiredStateStore::new(paths.state_dir().to_owned()).and_then(|store| store.load()) {
+        Ok(desired) => {
+            let revision_matches = desired
+                .active_profile
+                .as_deref()
+                .zip(desired.profile_sha256.as_deref())
+                .and_then(|(profile, expected)| {
+                    let store = ProfileStore::new(paths.profiles_dir()).ok()?;
+                    let path = store.profile_path(profile).ok()?;
+                    let contents = fs::read(path).ok()?;
+                    Some(profile_digest(&contents) == expected)
+                })
+                .unwrap_or(false);
+            let active_matches = session.as_ref().is_some_and(|session| {
+                desired.active_profile.as_deref() == Some(session.profile())
+            });
+            if revision_matches && active_matches {
+                println!("desired state: profile revision and active session match");
+            } else {
+                println!("desired state: profile revision or active session mismatch");
+                critical_issue = true;
+            }
+        }
+        Err(error) => {
+            println!("desired state: invalid ({error})");
+            critical_issue = true;
+        }
+    }
+
+    if session.is_some() {
+        match manager.health_report().await {
+            Ok(report) => {
+                println!(
+                    "connectivity: {} | probes {}/{} | Codex {}",
+                    health_label(report.status),
+                    report.successful_probes,
+                    report.total_probes,
+                    if report.codex_reachable {
+                        "reachable"
+                    } else {
+                        "unreachable"
+                    }
+                );
+                if matches!(
+                    report.status,
+                    HealthStatus::Unhealthy | HealthStatus::ControllerUnavailable
+                ) {
+                    critical_issue = true;
+                }
+            }
+            Err(error) => {
+                println!("connectivity: unavailable ({error})");
+                critical_issue = true;
+            }
+        }
+    }
+
+    let clients = stale_clients(session.as_ref().map(ManagedSession::session_id));
+    if clients.is_empty() {
+        println!("inherited clients: no stale MihoTerm session markers found");
+    } else {
+        println!(
+            "inherited clients: {} process(es) use a different MihoTerm session marker",
+            clients.len()
+        );
+        for client in clients.iter().take(8) {
+            println!("  pid {}  {}", client.pid, client.command);
+        }
+        println!("  these may be stale clients or another explicitly isolated MihoTerm instance");
+        println!("  restart stale terminals/processes or re-source the MihoTerm shell integration");
+    }
+
+    if critical_issue {
+        Err(io::Error::other("doctor found unresolved managed proxy issues").into())
+    } else {
+        Ok(())
+    }
+}
+
+const fn health_label(status: HealthStatus) -> &'static str {
+    match status {
+        HealthStatus::Healthy => "healthy",
+        HealthStatus::Unhealthy => "unhealthy",
+        HealthStatus::NotGlobal => "skipped outside global mode",
+        HealthStatus::ControllerUnavailable => "controller unavailable",
+    }
+}
+
+const fn recovery_label(outcome: RecoveryOutcome) -> &'static str {
+    match outcome {
+        RecoveryOutcome::AlreadyHealthy => "already healthy",
+        RecoveryOutcome::NotApplicable => "not applicable outside global mode",
+        RecoveryOutcome::Cooldown => "automatic recovery is cooling down",
+        RecoveryOutcome::RestartRequested => "requested an exact-child restart",
+        RecoveryOutcome::RecoveredByRefresh => "recovered after a validated profile refresh",
+        RecoveryOutcome::RecoveredByKnownGood => "recovered with a bounded known-good fallback",
+        RecoveryOutcome::Degraded => "recovery exhausted; session remains degraded",
+    }
 }
 
 async fn run_probe_command(
@@ -447,9 +670,9 @@ fn run_uninstaller(purge: bool) -> Result<(), Box<dyn std::error::Error>> {
 
 async fn run_profile(
     command: ProfileCommand,
-    profiles_dir: PathBuf,
+    paths: &AppPaths,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let store = ProfileStore::new(profiles_dir)?;
+    let store = ProfileStore::new(paths.profiles_dir())?;
 
     match command {
         ProfileCommand::Add { id, url_file, file } => {
@@ -458,9 +681,33 @@ async fn run_profile(
             store.add(&id, source).await?;
             println!("Added profile {id} from {kind}.");
         }
-        ProfileCommand::Update { id } => {
+        ProfileCommand::Update { id, apply } => {
             store.update(&id).await?;
-            println!("Updated profile {id}.");
+            if apply {
+                let profile_path = store.profile_path(&id)?;
+                let manager = managed_session_manager(paths)?;
+                let recovery = match manager
+                    .switch_profile_with_recovery(&id, &profile_path)
+                    .await
+                {
+                    Ok((_, recovery)) => recovery,
+                    Err(error) => {
+                        if store.rollback(&id).is_err() {
+                            return Err(RuntimeError::SessionSwitchRollback.into());
+                        }
+                        return Err(error.into());
+                    }
+                };
+                println!("Updated and applied profile {id} without recreating listeners.");
+                if !matches!(
+                    recovery,
+                    RecoveryOutcome::AlreadyHealthy | RecoveryOutcome::NotApplicable
+                ) {
+                    println!("Post-apply recovery: {}.", recovery_label(recovery));
+                }
+            } else {
+                println!("Updated profile {id}.");
+            }
         }
         ProfileCommand::Rollback { id } => {
             store.rollback(&id)?;

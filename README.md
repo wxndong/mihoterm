@@ -3,7 +3,7 @@
 A tiny, fast, keyboard-first TUI for [Mihomo](https://github.com/MetaCubeX/mihomo)
 on Linux.
 
-> **Status:** v0.1.0-alpha.4 is the current prerelease. Managed mode,
+> **Status:** v0.1.0-alpha.5 is the current prerelease. Managed mode,
 > user-local installation, and portable packaging are validated locally before
 > each release.
 
@@ -34,11 +34,14 @@ network.
 - Import Mihomo YAML from a protected subscription URL file or local file.
 - Add, inspect in redacted form, replace, validate, update, and roll back named
   subscription profiles from the TUI or CLI.
-- Switch the managed TUI between stored profiles with a confirmed hot reload
-  and immediate dashboard refresh.
+- Switch the managed TUI between stored profiles with a confirmed hot reload,
+  bounded post-reload recovery, and immediate dashboard refresh.
 - Keep one authenticated, user-owned Mihomo process running independently of
-  the TUI, with private runtime files, random loopback ports, and exact-PID
-  lifecycle control.
+  the TUI, with private runtime files, random loopback ports, exact-PID
+  lifecycle control, bounded crash restart, and listener-preserving recovery.
+- Persist the active profile, mode, and selector choices; diagnose configuration
+  drift, Codex reachability, and inherited session markers with
+  `mihoterm doctor`, or run the bounded repair path with `doctor --repair`.
 - Optionally register that managed process with the per-user service manager;
   the installer offers this by default and remains usable without systemd.
 - Export standard HTTP, HTTPS, and SOCKS proxy variables, open a proxied shell,
@@ -84,6 +87,10 @@ $ exec "$SHELL" -l
 $ mihoterm
 ```
 
+Fleet upgrades can add `--defer-runtime-restart` to install new bytes and
+integration files without interrupting an active managed proxy. See
+[Installation](docs/installation.md) for the staged cutover contract.
+
 The installer asks whether MihoTerm should start automatically and defaults to
 yes. The archive is self-contained, so no compiler or runtime environment is
 needed. On first run, MihoTerm asks for an HTTPS subscription URL using a
@@ -127,6 +134,8 @@ The background lifecycle and explicit integration commands are:
 ```console
 $ mihoterm start
 $ mihoterm status
+$ mihoterm doctor
+$ mihoterm doctor --repair
 $ mihoterm probe --proxy "Proxy A"
 $ mihoterm probe --proxy "Proxy A" --target Google --target openai
 $ eval "$(mihoterm env)"
@@ -201,8 +210,9 @@ timeout_ms = 3000
 Press `s` in managed TUI mode for the simplest workflow. URL input is hidden,
 and the source list shows only a redacted origin such as
 `https://example.com/…`; paths and query credentials are never rendered.
-Changes to the active profile are stored safely and take effect after the
-managed proxy is restarted.
+Changes to the active profile are validated and applied immediately without
+recreating its proxy listeners. A failed apply restores the previous profile,
+source descriptor, runtime configuration, and session descriptor.
 
 The equivalent CLI accepts subscription URLs only through an owner-only file,
 keeping them out of shell history and process listings:
@@ -214,15 +224,17 @@ $ $EDITOR ~/.config/mihoterm/subscription.url
 $ mihoterm profile add primary \
     --url-file ~/.config/mihoterm/subscription.url
 $ mihoterm profile update primary
+$ mihoterm profile update primary --apply
 $ mihoterm profile rollback primary
 $ mihoterm profile list
 ```
 
 A local Mihomo YAML file can be imported with
 `mihoterm profile add primary --file ./profile.yaml`. Profile commands only
-manage private local files; they never reload or modify an attached Mihomo
-instance. See [Profile management](docs/profiles.md) for the complete storage
-and failure contract.
+manage private local files unless `update --apply` explicitly targets the
+managed session; they never reload or modify an attached Mihomo instance. See
+[Profile management](docs/profiles.md) for the complete storage and failure
+contract.
 
 To start or reuse the background proxy with a specific managed profile:
 

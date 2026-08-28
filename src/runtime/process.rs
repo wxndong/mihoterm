@@ -26,14 +26,16 @@ use super::{RuntimeError, config::build_managed_config};
 const MAX_PROFILE_BYTES: u64 = 16 * 1024 * 1024;
 const VALIDATION_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(2);
+const SHUTDOWN_KILL_PERIOD: Duration = Duration::from_secs(1);
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const RUNTIME_CONFIG: &str = "runtime.yaml";
 const RUNTIME_LOG: &str = "mihomo.log";
 const MAX_BUNDLED_DATA_BYTES: u64 = 64 * 1024 * 1024;
 const BUNDLED_DATA_FILES: [&str; 3] = ["geoip.metadb", "geoip.dat", "geosite.dat"];
 
-pub struct ManagedRuntime {
+pub(super) struct ManagedRuntime {
     child: Option<Child>,
+    restart: Option<RestartContext>,
     runtime_root: PathBuf,
     runtime_dir: PathBuf,
     controller_url: String,
@@ -41,31 +43,23 @@ pub struct ManagedRuntime {
     secret: SecretString,
     proxy_username: SecretString,
     proxy_password: SecretString,
-    cleanup_on_drop: bool,
+}
+
+struct RestartContext {
+    launcher: PathBuf,
+    executable: PathBuf,
+    home: PathBuf,
+    temporary: PathBuf,
+    configuration: PathBuf,
+    log: PathBuf,
 }
 
 impl ManagedRuntime {
-    pub async fn start(
+    pub(super) async fn start_with_mode(
         mihomo: &Path,
         profile: &Path,
         runtime_root: &Path,
-    ) -> Result<Self, RuntimeError> {
-        Self::start_with_lifetime(mihomo, profile, runtime_root, false).await
-    }
-
-    pub async fn start_persistent(
-        mihomo: &Path,
-        profile: &Path,
-        runtime_root: &Path,
-    ) -> Result<Self, RuntimeError> {
-        Self::start_with_lifetime(mihomo, profile, runtime_root, true).await
-    }
-
-    async fn start_with_lifetime(
-        mihomo: &Path,
-        profile: &Path,
-        runtime_root: &Path,
-        persistent: bool,
+        mode: OperatingMode,
     ) -> Result<Self, RuntimeError> {
         let executable = resolve_executable(mihomo)?;
         let runtime_root = prepare_runtime_root(runtime_root)?;
@@ -76,7 +70,7 @@ impl ManagedRuntime {
             profile,
             runtime_root.clone(),
             runtime_dir.clone(),
-            persistent,
+            mode,
         )
         .await;
         if result.is_err() {
@@ -90,7 +84,7 @@ impl ManagedRuntime {
         profile: &Path,
         runtime_root: PathBuf,
         runtime_dir: PathBuf,
-        persistent: bool,
+        mode: OperatingMode,
     ) -> Result<Self, RuntimeError> {
         let home = runtime_dir.join("home");
         let temporary = runtime_dir.join("tmp");
@@ -113,7 +107,7 @@ impl ManagedRuntime {
             secret.expose_secret(),
             proxy_username.expose_secret(),
             proxy_password.expose_secret(),
-            OperatingMode::Global,
+            mode,
         )?;
         let configuration_path = runtime_dir.join(RUNTIME_CONFIG);
         write_private(&configuration_path, &configuration)?;
@@ -139,11 +133,18 @@ impl ManagedRuntime {
             &temporary,
             &configuration_path,
             &log_path,
-            persistent,
         )?;
 
         Ok(Self {
             child: Some(child),
+            restart: Some(RestartContext {
+                launcher,
+                executable,
+                home,
+                temporary,
+                configuration: configuration_path,
+                log: log_path,
+            }),
             runtime_root,
             runtime_dir,
             controller_url,
@@ -151,7 +152,6 @@ impl ManagedRuntime {
             secret,
             proxy_username,
             proxy_password,
-            cleanup_on_drop: true,
         })
     }
 
@@ -199,11 +199,6 @@ impl ManagedRuntime {
         self.child.as_ref().map(Child::id)
     }
 
-    pub fn detach(mut self) {
-        self.cleanup_on_drop = false;
-        self.child.take();
-    }
-
     pub async fn wait_ready(
         &mut self,
         client: &ApiClient,
@@ -233,6 +228,27 @@ impl ManagedRuntime {
             }
             tokio::time::sleep(PROCESS_POLL_INTERVAL).await;
         }
+    }
+
+    pub async fn restart(&mut self, timeout: Duration) -> Result<(), RuntimeError> {
+        if self.child.is_some() && self.try_wait()?.is_none() {
+            return Err(RuntimeError::ProcessStatus);
+        }
+        let context = self.restart.as_ref().ok_or(RuntimeError::ProcessStatus)?;
+        self.child = Some(spawn_managed_child(
+            &context.launcher,
+            &context.executable,
+            &context.home,
+            &context.temporary,
+            &context.configuration,
+            &context.log,
+        )?);
+        let client = self.api_client(Duration::from_millis(500))?;
+        if let Err(error) = self.wait_ready(&client, timeout).await {
+            let _ = self.stop_child(false);
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub fn stop(&mut self) -> Result<(), RuntimeError> {
@@ -268,16 +284,8 @@ impl ManagedRuntime {
             if let Some(pid) = i32::try_from(child.id()).ok().and_then(Pid::from_raw) {
                 let _ = kill_process(pid, Signal::TERM);
             }
-            let deadline = Instant::now() + SHUTDOWN_GRACE_PERIOD;
-            while Instant::now() < deadline {
-                match child.try_wait() {
-                    Ok(Some(_)) => return Ok(()),
-                    Ok(None) => std::thread::sleep(PROCESS_POLL_INTERVAL),
-                    Err(_) => {
-                        self.child = Some(child);
-                        return Err(RuntimeError::ProcessStatus);
-                    }
-                }
+            if wait_for_child_exit(&mut child, SHUTDOWN_GRACE_PERIOD)? {
+                return Ok(());
             }
         }
 
@@ -285,14 +293,28 @@ impl ManagedRuntime {
             self.child = Some(child);
             return Err(RuntimeError::Stop);
         }
-        match child.wait() {
-            Ok(_) => Ok(()),
-            Err(_) => {
-                self.child = Some(child);
-                Err(RuntimeError::Stop)
-            }
+        if wait_for_child_exit(&mut child, SHUTDOWN_KILL_PERIOD)? {
+            Ok(())
+        } else {
+            self.child = Some(child);
+            Err(RuntimeError::Stop)
         }
     }
+}
+
+fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<bool, RuntimeError> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(true),
+            Ok(None) => std::thread::sleep(PROCESS_POLL_INTERVAL),
+            Err(_) => return Err(RuntimeError::ProcessStatus),
+        }
+    }
+    child
+        .try_wait()
+        .map(|status| status.is_some())
+        .map_err(|_| RuntimeError::ProcessStatus)
 }
 
 #[must_use]
@@ -312,7 +334,7 @@ fn bundled_mihomo_for(current_executable: &Path) -> Option<PathBuf> {
 
 impl Drop for ManagedRuntime {
     fn drop(&mut self) {
-        if self.cleanup_on_drop && self.stop_child(false).is_ok() {
+        if self.stop_child(false).is_ok() {
             cleanup_runtime_directory(&self.runtime_root, &self.runtime_dir);
         }
     }
@@ -324,20 +346,15 @@ pub fn exec_managed_child(
     home: &Path,
     configuration: &Path,
     test: bool,
-    detached: bool,
 ) -> Result<(), RuntimeError> {
     let parent_pid = i32::try_from(parent_pid)
         .ok()
         .and_then(Pid::from_raw)
         .ok_or(RuntimeError::ChildInitialization)?;
-    if detached {
-        setsid().map_err(|_| RuntimeError::ChildInitialization)?;
-    } else {
-        set_parent_process_death_signal(Some(Signal::TERM))
-            .map_err(|_| RuntimeError::ChildInitialization)?;
-        if getppid() != Some(parent_pid) {
-            return Err(RuntimeError::ParentExited);
-        }
+    set_parent_process_death_signal(Some(Signal::TERM))
+        .map_err(|_| RuntimeError::ChildInitialization)?;
+    if getppid() != Some(parent_pid) {
+        return Err(RuntimeError::ParentExited);
     }
     umask(Mode::RWXG | Mode::RWXO);
 
@@ -353,6 +370,12 @@ pub fn exec_managed_child(
         .exec();
     let _ = error;
     Err(RuntimeError::ChildExec)
+}
+
+pub fn detach_supervisor() -> Result<(), RuntimeError> {
+    setsid()
+        .map(|_| ())
+        .map_err(|_| RuntimeError::ChildInitialization)
 }
 
 struct PortReservations {
@@ -393,15 +416,8 @@ async fn validate_configuration(
     log_path: &Path,
 ) -> Result<(), RuntimeError> {
     let (stdout, stderr) = private_log(log_path, false)?;
-    let mut command = child_wrapper_command(
-        launcher,
-        executable,
-        home,
-        temporary,
-        configuration,
-        true,
-        false,
-    );
+    let mut command =
+        child_wrapper_command(launcher, executable, home, temporary, configuration, true);
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
@@ -422,7 +438,7 @@ async fn validate_configuration(
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = wait_for_child_exit(&mut child, SHUTDOWN_KILL_PERIOD);
             return Err(RuntimeError::ValidationTimeout);
         }
         tokio::time::sleep(PROCESS_POLL_INTERVAL).await;
@@ -436,18 +452,10 @@ fn spawn_managed_child(
     temporary: &Path,
     configuration: &Path,
     log_path: &Path,
-    detached: bool,
 ) -> Result<Child, RuntimeError> {
     let (stdout, stderr) = private_log(log_path, true)?;
-    let mut command = child_wrapper_command(
-        launcher,
-        executable,
-        home,
-        temporary,
-        configuration,
-        false,
-        detached,
-    );
+    let mut command =
+        child_wrapper_command(launcher, executable, home, temporary, configuration, false);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
@@ -463,7 +471,6 @@ fn child_wrapper_command(
     temporary: &Path,
     configuration: &Path,
     test: bool,
-    detached: bool,
 ) -> Command {
     let mut command = isolated_command(launcher, home, temporary);
     command
@@ -478,9 +485,6 @@ fn child_wrapper_command(
         .arg(configuration);
     if test {
         command.arg("--test");
-    }
-    if detached {
-        command.arg("--detached");
     }
     command
 }
@@ -813,6 +817,7 @@ mod tests {
         );
         let mut runtime = ManagedRuntime {
             child: Some(owned),
+            restart: None,
             runtime_root: root.clone(),
             runtime_dir: run.clone(),
             controller_url: "http://127.0.0.1:1".into(),
@@ -820,7 +825,6 @@ mod tests {
             secret: SecretString::from("fixture-only"),
             proxy_username: SecretString::from("fixture-user"),
             proxy_password: SecretString::from("fixture-password"),
-            cleanup_on_drop: true,
         };
 
         runtime.stop().expect("managed runtime should stop");
