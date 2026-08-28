@@ -4,5 +4,8 @@ mod process;
 mod session;
 
 pub use error::RuntimeError;
-pub use process::{ManagedRuntime, default_mihomo_executable, exec_managed_child};
-pub use session::{ManagedSession, ProxyEnvironment, SessionManager, shell_clear_owned};
+pub use process::{default_mihomo_executable, detach_supervisor, exec_managed_child};
+pub use session::{
+    HealthReport, HealthStatus, ManagedSession, ProxyEnvironment, RecoveryOutcome, SessionManager,
+    shell_clear_owned,
+};

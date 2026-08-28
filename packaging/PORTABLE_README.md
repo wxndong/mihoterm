@@ -17,6 +17,12 @@ installation. A different installed version is stopped and replaced only after
 the new immutable release directory has been verified; failed core startup
 rolls back to the previous release.
 
+Use `--defer-runtime-restart` for a staged upgrade that installs the new
+release, shell hook, and service definition while leaving an active managed
+proxy's PID, ports, credentials, and session unchanged. Cut over later with an
+explicit stop/start or service restart. Deferred installation never invokes
+the previous release's lifecycle commands.
+
 On first run, paste an HTTPS subscription URL at the hidden prompt. MihoTerm
 downloads and validates the profile, starts only the bundled Mihomo process,
 and opens the TUI. Later runs reuse the protected local profile. No compiler,

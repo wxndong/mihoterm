@@ -5,6 +5,7 @@ use crate::{
     probe::ProbeTarget,
     profile::{ProfileError, ProfileSource, ProfileSummary},
     runtime::RuntimeError,
+    state::StateError,
 };
 
 use super::{ConnectionRow, PolicyGroup, ProxyRow, Snapshot};
@@ -95,6 +96,14 @@ pub enum OperationSuccess {
         target: String,
         delay_ms: u32,
     },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum OperationError {
+    #[error(transparent)]
+    Api(#[from] ApiError),
+    #[error("the live change succeeded but could not be saved: {0}")]
+    State(#[from] StateError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,7 +332,7 @@ impl App {
         };
     }
 
-    pub fn apply_operation_result(&mut self, result: Result<OperationSuccess, ApiError>) {
+    pub fn apply_operation_result(&mut self, result: Result<OperationSuccess, OperationError>) {
         self.operation_in_flight = false;
         match result {
             Ok(OperationSuccess::ProxySelected { group, proxy }) => {
@@ -1177,7 +1186,7 @@ impl App {
 
     fn profile_change_message(&self, verb: &str, id: &str) -> String {
         if self.active_profile.as_deref() == Some(id) {
-            format!("{verb} {id}; restart the managed proxy to apply it")
+            format!("{verb} {id}; applied without recreating proxy listeners")
         } else {
             format!("{verb} {id}")
         }
@@ -1664,7 +1673,7 @@ mod tests {
     }
 
     #[test]
-    fn editing_the_active_source_reports_that_a_restart_is_required() {
+    fn editing_the_active_source_reports_listener_preserving_apply() {
         let mut app = managed_app();
         app.handle_input(Input::Character('s'));
         app.handle_input(Input::Character('e'));
@@ -1688,7 +1697,11 @@ mod tests {
             }],
         }));
 
-        assert!(app.status.message.contains("restart"));
+        assert!(
+            app.status
+                .message
+                .contains("without recreating proxy listeners")
+        );
         assert!(!app.status.message.contains("hidden"));
     }
 

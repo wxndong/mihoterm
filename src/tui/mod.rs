@@ -10,13 +10,14 @@ use tokio::sync::mpsc;
 
 use crate::{
     app::{
-        Action, App, Input, InputMode, Operation, OperationSuccess, ProfileOperation,
-        ProfileOperationError, ProfileOperationSuccess, Snapshot, enrich_with_connections,
-        fetch_snapshot,
+        Action, App, Input, InputMode, Operation, OperationError, OperationSuccess,
+        ProfileOperation, ProfileOperationError, ProfileOperationSuccess, Snapshot,
+        enrich_with_connections, fetch_snapshot,
     },
     mihomo::{ApiClient, ApiError},
     profile::ProfileStore,
-    runtime::SessionManager,
+    runtime::{RuntimeError, SessionManager},
+    state::DesiredStateStore,
 };
 
 use terminal::TerminalSession;
@@ -33,14 +34,20 @@ pub enum TuiError {
 pub struct ManagedProfiles {
     store: ProfileStore,
     session_manager: SessionManager,
+    desired: DesiredStateStore,
 }
 
 impl ManagedProfiles {
     #[must_use]
-    pub const fn new(store: ProfileStore, session_manager: SessionManager) -> Self {
+    pub const fn new(
+        store: ProfileStore,
+        session_manager: SessionManager,
+        desired: DesiredStateStore,
+    ) -> Self {
         Self {
             store,
             session_manager,
+            desired,
         }
     }
 }
@@ -63,8 +70,15 @@ pub async fn run(
     ));
     let (operation_sender, operation_receiver) = mpsc::channel(1);
     let (result_sender, mut result_receiver) = mpsc::channel(1);
-    let operation_worker =
-        tokio::spawn(operation_worker(client, operation_receiver, result_sender));
+    let desired = managed_profiles
+        .as_ref()
+        .map(|managed| managed.desired.clone());
+    let operation_worker = tokio::spawn(operation_worker(
+        client,
+        desired,
+        operation_receiver,
+        result_sender,
+    ));
     let (profile_sender, profile_receiver) = mpsc::channel(1);
     let (profile_result_sender, mut profile_result_receiver) = mpsc::channel(1);
     let profile_worker = managed_profiles.map(|managed| {
@@ -182,28 +196,43 @@ async fn refresh_worker(
 
 async fn operation_worker(
     client: ApiClient,
+    desired: Option<DesiredStateStore>,
     mut operation_receiver: mpsc::Receiver<Operation>,
-    result_sender: mpsc::Sender<Result<OperationSuccess, ApiError>>,
+    result_sender: mpsc::Sender<Result<OperationSuccess, OperationError>>,
 ) {
     while let Some(operation) = operation_receiver.recv().await {
         let result = match operation {
-            Operation::SelectProxy { group, proxy } => client
-                .select_proxy(&group, &proxy)
-                .await
-                .map(|()| OperationSuccess::ProxySelected { group, proxy }),
-            Operation::SetMode { mode } => client
-                .set_mode(mode)
-                .await
-                .map(|()| OperationSuccess::ModeChanged { mode }),
+            Operation::SelectProxy { group, proxy } => {
+                match client.select_proxy(&group, &proxy).await {
+                    Ok(()) => desired
+                        .as_ref()
+                        .map(|store| store.record_selection(&group, &proxy))
+                        .transpose()
+                        .map(|_| OperationSuccess::ProxySelected { group, proxy })
+                        .map_err(OperationError::from),
+                    Err(error) => Err(error.into()),
+                }
+            }
+            Operation::SetMode { mode } => match client.set_mode(mode).await {
+                Ok(()) => desired
+                    .as_ref()
+                    .map(|store| store.record_mode(mode))
+                    .transpose()
+                    .map(|_| OperationSuccess::ModeChanged { mode })
+                    .map_err(OperationError::from),
+                Err(error) => Err(error.into()),
+            },
             Operation::Probe { proxy, target } => {
                 let target_name = target.name().to_owned();
-                client.probe_delay(&proxy, &target).await.map(|response| {
-                    OperationSuccess::ProbeMeasured {
+                client
+                    .probe_delay(&proxy, &target)
+                    .await
+                    .map(|response| OperationSuccess::ProbeMeasured {
                         proxy,
                         target: target_name,
                         delay_ms: response.delay,
-                    }
-                })
+                    })
+                    .map_err(OperationError::from)
             }
         };
 
@@ -221,6 +250,7 @@ async fn profile_worker(
     let ManagedProfiles {
         store,
         session_manager,
+        desired: _,
     } = managed;
     while let Some(operation) = operation_receiver.recv().await {
         let result = match operation {
@@ -233,24 +263,36 @@ async fn profile_worker(
             },
             ProfileOperation::ReplaceSource { id, source } => {
                 match store.replace_source(&id, source).await {
-                    Ok(()) => store
-                        .list()
-                        .map(|profiles| ProfileOperationSuccess::SourceReplaced { id, profiles })
-                        .map_err(ProfileOperationError::from),
+                    Ok(()) => match apply_revision_if_active(&store, &session_manager, &id).await {
+                        Ok(()) => store
+                            .list()
+                            .map(|profiles| ProfileOperationSuccess::SourceReplaced {
+                                id,
+                                profiles,
+                            })
+                            .map_err(ProfileOperationError::from),
+                        Err(error) => Err(error),
+                    },
                     Err(error) => Err(error.into()),
                 }
             }
             ProfileOperation::Update { id } => match store.update(&id).await {
-                Ok(()) => store
-                    .list()
-                    .map(|profiles| ProfileOperationSuccess::Updated { id, profiles })
-                    .map_err(ProfileOperationError::from),
+                Ok(()) => match apply_revision_if_active(&store, &session_manager, &id).await {
+                    Ok(()) => store
+                        .list()
+                        .map(|profiles| ProfileOperationSuccess::Updated { id, profiles })
+                        .map_err(ProfileOperationError::from),
+                    Err(error) => Err(error),
+                },
                 Err(error) => Err(error.into()),
             },
             ProfileOperation::Switch { id } => {
                 let result = store.profile_path(&id).map_err(ProfileOperationError::from);
                 match result {
-                    Ok(path) => match session_manager.switch_profile(&id, &path).await {
+                    Ok(path) => match session_manager
+                        .switch_profile_with_recovery(&id, &path)
+                        .await
+                    {
                         Ok(_) => store
                             .list()
                             .map(|profiles| ProfileOperationSuccess::Switched { id, profiles })
@@ -266,6 +308,30 @@ async fn profile_worker(
             return;
         }
     }
+}
+
+async fn apply_revision_if_active(
+    store: &ProfileStore,
+    session_manager: &SessionManager,
+    id: &str,
+) -> Result<(), ProfileOperationError> {
+    let Some(session) = session_manager.active()? else {
+        return Ok(());
+    };
+    if session.profile() != id {
+        return Ok(());
+    }
+    let path = store.profile_path(id)?;
+    if let Err(error) = session_manager
+        .switch_profile_with_recovery(id, &path)
+        .await
+    {
+        if store.rollback(id).is_err() {
+            return Err(RuntimeError::SessionSwitchRollback.into());
+        }
+        return Err(error.into());
+    }
+    Ok(())
 }
 
 fn map_key(key: KeyEvent, input_mode: InputMode) -> Option<Input> {

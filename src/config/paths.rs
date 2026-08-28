@@ -1,6 +1,6 @@
 use std::{
     env, fs,
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
@@ -12,6 +12,7 @@ pub struct AppPaths {
     config_file: PathBuf,
     state_dir: PathBuf,
     runtime_dir: PathBuf,
+    runtime_fallback: bool,
 }
 
 impl AppPaths {
@@ -33,17 +34,24 @@ impl AppPaths {
                 .unwrap_or_else(|| project.data_local_dir())
                 .to_owned(),
         };
-        let runtime_dir = match runtime_dir {
-            Some(path) => absolute_path(path)?,
-            None => project
-                .runtime_dir()
-                .map_or_else(|| state_dir.join("runtime"), Path::to_owned),
+        let conventional_runtime = PathBuf::from(format!(
+            "/run/user/{}/mihoterm",
+            rustix::process::geteuid().as_raw()
+        ));
+        let implicit_runtime = project
+            .runtime_dir()
+            .map(Path::to_owned)
+            .unwrap_or(conventional_runtime);
+        let (runtime_dir, runtime_fallback) = match runtime_dir {
+            Some(path) => (absolute_path(path)?, false),
+            None => choose_implicit_runtime(Some(&implicit_runtime), &state_dir),
         };
 
         Ok(Self {
             config_file,
             state_dir,
             runtime_dir,
+            runtime_fallback,
         })
     }
 
@@ -67,6 +75,11 @@ impl AppPaths {
         &self.runtime_dir
     }
 
+    #[must_use]
+    pub const fn runtime_uses_state_fallback(&self) -> bool {
+        self.runtime_fallback
+    }
+
     pub fn prepare_private_state(&self) -> Result<(), PathError> {
         if self.state_dir.exists() {
             let metadata = fs::symlink_metadata(&self.state_dir)
@@ -84,6 +97,57 @@ impl AppPaths {
         }
         Ok(())
     }
+}
+
+fn choose_implicit_runtime(candidate: Option<&Path>, state_dir: &Path) -> (PathBuf, bool) {
+    let state_runtime = state_dir.join("runtime");
+    if let Some(candidate) = candidate.filter(|path| private_session_descriptor_exists(path)) {
+        return (candidate.to_owned(), false);
+    }
+    if private_session_descriptor_exists(&state_runtime) {
+        return (state_runtime, true);
+    }
+    candidate
+        .filter(|path| runtime_path_is_usable(path))
+        .map_or_else(|| (state_runtime, true), |path| (path.to_owned(), false))
+}
+
+fn private_session_descriptor_exists(runtime: &Path) -> bool {
+    if !private_owned_writable_directory(runtime) {
+        return false;
+    }
+    fs::symlink_metadata(runtime.join("session.json")).is_ok_and(|metadata| {
+        metadata.file_type().is_file()
+            && metadata.uid() == rustix::process::geteuid().as_raw()
+            && metadata.permissions().mode() & 0o077 == 0
+    })
+}
+
+fn runtime_path_is_usable(path: &Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    if !private_owned_writable_directory(parent) {
+        return false;
+    }
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => private_owned_writable_metadata(&metadata),
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
+fn private_owned_writable_directory(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .ok()
+        .is_some_and(|metadata| private_owned_writable_metadata(&metadata))
+}
+
+fn private_owned_writable_metadata(metadata: &fs::Metadata) -> bool {
+    !metadata.file_type().is_symlink()
+        && metadata.is_dir()
+        && metadata.uid() == rustix::process::geteuid().as_raw()
+        && metadata.permissions().mode() & 0o077 == 0
+        && metadata.permissions().mode() & 0o300 == 0o300
 }
 
 fn absolute_path(path: &Path) -> Result<PathBuf, PathError> {
@@ -120,7 +184,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::AppPaths;
+    use super::{AppPaths, choose_implicit_runtime};
 
     #[test]
     fn explicit_state_directory_controls_profile_storage() {
@@ -136,6 +200,96 @@ mod tests {
             Path::new("/tmp/mihoterm-test-state/profiles")
         );
         assert_eq!(paths.runtime_dir(), Path::new("/tmp/mihoterm-test-runtime"));
+        assert!(!paths.runtime_uses_state_fallback());
+    }
+
+    #[test]
+    fn missing_or_insecure_ephemeral_runtime_falls_back_to_state() {
+        let root = temporary_directory();
+        let state = root.join("state");
+        let missing = root.join("missing/mihoterm");
+        assert_eq!(
+            choose_implicit_runtime(Some(&missing), &state),
+            (state.join("runtime"), true)
+        );
+
+        let insecure_parent = root.join("shared-runtime");
+        fs::create_dir_all(&insecure_parent).expect("fixture should be created");
+        fs::set_permissions(&insecure_parent, fs::Permissions::from_mode(0o755))
+            .expect("fixture permissions should be set");
+        assert_eq!(
+            choose_implicit_runtime(Some(&insecure_parent.join("mihoterm")), &state),
+            (state.join("runtime"), true)
+        );
+        fs::remove_dir_all(root).expect("fixture should be removed");
+    }
+
+    #[test]
+    fn secure_ephemeral_runtime_is_preferred() {
+        let root = temporary_directory();
+        fs::create_dir(&root).expect("fixture should be created");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("fixture permissions should be set");
+        let candidate = root.join("mihoterm");
+        let state = root.join("state");
+
+        assert_eq!(
+            choose_implicit_runtime(Some(&candidate), &state),
+            (candidate, false)
+        );
+        fs::remove_dir_all(root).expect("fixture should be removed");
+    }
+
+    #[test]
+    fn an_existing_durable_session_wins_when_ephemeral_runtime_appears_later() {
+        let root = temporary_directory();
+        let state = root.join("state");
+        let durable = state.join("runtime");
+        let ephemeral = root.join("ephemeral");
+        fs::create_dir_all(&durable).expect("durable runtime should be created");
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700))
+            .expect("state permissions should be set");
+        fs::set_permissions(&durable, fs::Permissions::from_mode(0o700))
+            .expect("durable permissions should be set");
+        fs::create_dir(&ephemeral).expect("ephemeral runtime should be created");
+        fs::set_permissions(&ephemeral, fs::Permissions::from_mode(0o700))
+            .expect("ephemeral permissions should be set");
+        fs::write(durable.join("session.json"), b"fixture")
+            .expect("session marker should be written");
+        fs::set_permissions(
+            durable.join("session.json"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .expect("session permissions should be set");
+
+        assert_eq!(
+            choose_implicit_runtime(Some(&ephemeral.join("mihoterm")), &state),
+            (durable, true)
+        );
+        fs::remove_dir_all(root).expect("fixture should be removed");
+    }
+
+    #[test]
+    fn existing_descriptor_does_not_override_runtime_security_checks() {
+        let root = temporary_directory();
+        let state = root.join("state");
+        let candidate = root.join("candidate");
+        fs::create_dir_all(&candidate).expect("candidate should be created");
+        fs::set_permissions(&candidate, fs::Permissions::from_mode(0o755))
+            .expect("candidate permissions should be set");
+        fs::write(candidate.join("session.json"), b"fixture")
+            .expect("session marker should be written");
+        fs::set_permissions(
+            candidate.join("session.json"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .expect("session permissions should be set");
+
+        assert_eq!(
+            choose_implicit_runtime(Some(&candidate), &state),
+            (state.join("runtime"), true)
+        );
+        fs::remove_dir_all(root).expect("fixture should be removed");
     }
 
     #[test]

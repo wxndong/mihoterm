@@ -66,6 +66,13 @@ pub enum Command {
     /// Print a sanitized one-line controller status without opening the TUI.
     Status,
 
+    /// Diagnose managed-session, profile, connectivity, and inherited-client state.
+    Doctor {
+        /// Start/recover the managed session and bypass the automatic recovery cooldown.
+        #[arg(long)]
+        repair: bool,
+    },
+
     /// Probe configured HTTPS targets through one Mihomo proxy.
     Probe {
         /// Mihomo proxy or policy-group name to probe without changing selection.
@@ -89,6 +96,16 @@ pub enum Command {
 
     /// Stop only the background managed proxy owned by MihoTerm.
     Stop,
+
+    /// Run the managed proxy supervisor in the foreground (for systemd).
+    Supervise {
+        /// Managed profile identifier; restores the last active profile when omitted.
+        profile: Option<String>,
+
+        /// Mihomo executable name or path.
+        #[arg(long, env = "MIHOTERM_MIHOMO", value_name = "PATH")]
+        mihomo: Option<PathBuf>,
+    },
 
     /// Print shell commands for the active managed proxy environment.
     Env {
@@ -162,9 +179,6 @@ pub enum Command {
 
         #[arg(long, hide = true)]
         test: bool,
-
-        #[arg(long, hide = true)]
-        detached: bool,
     },
 
     #[command(name = "__session-start", hide = true)]
@@ -180,6 +194,9 @@ pub enum Command {
 
         #[arg(long, hide = true)]
         runtime_root: PathBuf,
+
+        #[arg(long, hide = true)]
+        state_root: PathBuf,
     },
 }
 
@@ -208,6 +225,10 @@ pub enum ProfileCommand {
     Update {
         /// Stable profile identifier.
         id: String,
+
+        /// Apply the validated revision to the managed session without recreating listeners.
+        #[arg(long)]
+        apply: bool,
     },
 
     /// Swap the current profile with its previous validated version.
@@ -238,6 +259,38 @@ mod tests {
 
         assert!(cli.controller.is_none());
         assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn systemd_unit_runs_the_foreground_supervisor_with_restart_policy() {
+        let unit = include_str!("../packaging/systemd/mihoterm.service");
+
+        assert!(unit.contains("Type=simple"));
+        assert!(unit.contains("ExecStart=%h/.local/bin/mihoterm supervise"));
+        assert!(unit.contains("Restart=on-failure"));
+        assert!(!unit.contains("RemainAfterExit"));
+    }
+
+    #[test]
+    fn parses_doctor_repair_and_transactional_profile_apply() {
+        let doctor = Cli::try_parse_from(["mihoterm", "doctor", "--repair"])
+            .expect("doctor repair should parse");
+        assert!(matches!(
+            doctor.command,
+            Some(Command::Doctor { repair: true })
+        ));
+
+        let update = Cli::try_parse_from(["mihoterm", "profile", "update", "biu", "--apply"])
+            .expect("profile apply should parse");
+        assert!(matches!(
+            update.command,
+            Some(Command::Profile {
+                command: ProfileCommand::Update {
+                    id,
+                    apply: true
+                }
+            }) if id == "biu"
+        ));
     }
 
     #[test]

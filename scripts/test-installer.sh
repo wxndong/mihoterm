@@ -3,7 +3,15 @@ set -euo pipefail
 
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 fixture="$(mktemp -d "$project_dir/target/installer-test.XXXXXXXX")"
-trap 'rm -rf -- "$fixture"' EXIT
+runtime_guard_pid=
+cleanup() {
+  if [[ -n "$runtime_guard_pid" ]]; then
+    kill "$runtime_guard_pid" 2>/dev/null || true
+    wait "$runtime_guard_pid" 2>/dev/null || true
+  fi
+  rm -rf -- "$fixture"
+}
+trap cleanup EXIT
 
 bundle="$fixture/bundle"
 test_home="$fixture/home"
@@ -105,8 +113,18 @@ make_fake_bundle() {
 case "\${1:-}" in
   --version) printf '%s\n' 'mihoterm $version' ;;
   status)
+    fake_status_count=0
+    [ ! -r "\$XDG_RUNTIME_DIR/fake-status-count" ] || IFS= read -r fake_status_count <"\$XDG_RUNTIME_DIR/fake-status-count"
+    fake_status_count=\$((fake_status_count + 1))
+    printf '%s\n' "\$fake_status_count" >"\$XDG_RUNTIME_DIR/fake-status-count"
     if [ -e "\$XDG_RUNTIME_DIR/fake-running" ]; then
-      printf '%s\n' 'MihoTerm proxy running | Mihomo fake | mode global | profile secondary | mixed 127.0.0.1:1 | pid 1'
+      fake_pid=1
+      fake_mixed_port=1
+      fake_controller_port=2
+      [ ! -r "\$XDG_RUNTIME_DIR/fake-pid" ] || IFS= read -r fake_pid <"\$XDG_RUNTIME_DIR/fake-pid"
+      [ ! -r "\$XDG_RUNTIME_DIR/fake-mixed-port" ] || IFS= read -r fake_mixed_port <"\$XDG_RUNTIME_DIR/fake-mixed-port"
+      [ ! -r "\$XDG_RUNTIME_DIR/fake-controller-port" ] || IFS= read -r fake_controller_port <"\$XDG_RUNTIME_DIR/fake-controller-port"
+      printf '%s\n' "MihoTerm proxy running | Mihomo fake | mode global | profile secondary | mixed 127.0.0.1:\$fake_mixed_port | controller 127.0.0.1:\$fake_controller_port | pid \$fake_pid"
     else
       exit 1
     fi
@@ -156,5 +174,57 @@ test "$(readlink "$XDG_DATA_HOME/mihoterm/current")" = "$XDG_DATA_HOME/mihoterm/
 tail -n 3 "$XDG_RUNTIME_DIR/fake-lifecycle.log" | grep -Fxq '0.0.2 stop'
 tail -n 2 "$XDG_RUNTIME_DIR/fake-lifecycle.log" | grep -Fxq '0.0.3 start secondary'
 tail -n 1 "$XDG_RUNTIME_DIR/fake-lifecycle.log" | grep -Fxq '0.0.2 start secondary'
+
+defer_home="$fixture/defer-home"
+export HOME="$defer_home"
+export XDG_DATA_HOME="$defer_home/data"
+export XDG_CONFIG_HOME="$defer_home/config"
+export XDG_STATE_HOME="$defer_home/state"
+export XDG_RUNTIME_DIR="$defer_home/runtime"
+install -d -m 700 "$HOME" "$XDG_RUNTIME_DIR"
+
+defer_old_bundle="$fixture/defer-old-bundle"
+defer_new_bundle="$fixture/defer-new-bundle"
+make_fake_bundle "$defer_old_bundle" 0.0.4 no
+make_fake_bundle "$defer_new_bundle" 0.0.5 no
+printf '%s\n' '# 0.0.4 fixture unit' >>"$defer_old_bundle/systemd/mihoterm.service"
+printf '%s\n' '# 0.0.5 fixture unit' >>"$defer_new_bundle/systemd/mihoterm.service"
+
+"$defer_old_bundle/install.sh" --no-shell --autostart
+sleep 300 &
+runtime_guard_pid=$!
+: >"$XDG_RUNTIME_DIR/fake-running"
+printf '%s\n' "$runtime_guard_pid" >"$XDG_RUNTIME_DIR/fake-pid"
+printf '%s\n' 41231 >"$XDG_RUNTIME_DIR/fake-mixed-port"
+printf '%s\n' 41232 >"$XDG_RUNTIME_DIR/fake-controller-port"
+
+status_before=$("$HOME/.local/bin/mihoterm" status)
+pid_before=$(printf '%s\n' "$status_before" | sed -n 's/.* | pid \([0-9][0-9]*\)$/\1/p')
+mixed_before=$(printf '%s\n' "$status_before" | sed -n 's/.* | mixed 127\.0\.0\.1:\([0-9][0-9]*\) |.*/\1/p')
+controller_before=$(printf '%s\n' "$status_before" | sed -n 's/.* | controller 127\.0\.0\.1:\([0-9][0-9]*\) |.*/\1/p')
+
+defer_output=$("$defer_new_bundle/install.sh" --no-shell --autostart --defer-runtime-restart)
+status_after=$("$HOME/.local/bin/mihoterm" status)
+pid_after=$(printf '%s\n' "$status_after" | sed -n 's/.* | pid \([0-9][0-9]*\)$/\1/p')
+mixed_after=$(printf '%s\n' "$status_after" | sed -n 's/.* | mixed 127\.0\.0\.1:\([0-9][0-9]*\) |.*/\1/p')
+controller_after=$(printf '%s\n' "$status_after" | sed -n 's/.* | controller 127\.0\.0\.1:\([0-9][0-9]*\) |.*/\1/p')
+
+test "$(readlink "$XDG_DATA_HOME/mihoterm/current")" = "$XDG_DATA_HOME/mihoterm/releases/0.0.5"
+test "$status_before" = "$status_after"
+test "$pid_before" = "$runtime_guard_pid"
+test "$pid_after" = "$pid_before"
+test "$mixed_after" = "$mixed_before"
+test "$controller_after" = "$controller_before"
+test "$mixed_after" = 41231
+test "$controller_after" = 41232
+test "$(cat "$XDG_RUNTIME_DIR/fake-status-count")" = 2
+kill -0 "$runtime_guard_pid"
+test ! -e "$XDG_RUNTIME_DIR/fake-lifecycle.log"
+cmp -s "$defer_new_bundle/systemd/mihoterm.service" "$XDG_CONFIG_HOME/systemd/user/mihoterm.service"
+printf '%s\n' "$defer_output" | grep -Fq 'did not inspect, stop, or start the previous runtime'
+
+kill "$runtime_guard_pid"
+wait "$runtime_guard_pid" 2>/dev/null || true
+runtime_guard_pid=
 
 printf '%s\n' "installer lifecycle verified"

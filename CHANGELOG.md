@@ -7,6 +7,41 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0-alpha.5] - 2026-08-28
+
+### Added
+
+- A foreground managed supervisor with bounded same-endpoint Mihomo child
+  restart, durable desired profile/mode/selector state, and systemd
+  `Restart=on-failure` integration.
+- `mihoterm doctor [--repair]` for profile revision, controller, Codex probe,
+  and inherited session-marker diagnostics plus bounded recovery.
+- Listener-preserving `profile update ID --apply` and automatic active-profile
+  apply from the TUI, including an immediate bounded health check and recovery
+  through remembered or profile-authored policy groups.
+- Staged installer upgrades with `--defer-runtime-restart`, leaving the active
+  managed runtime's PID, session, credentials, and loopback ports unchanged by
+  the installation.
+
+### Changed
+
+- Runtime discovery now remains consistent when SSH or non-login environments
+  omit `XDG_RUNTIME_DIR`, and falls back to owner-only durable state only when
+  the per-user runtime is unavailable.
+- Profile rollback now keeps the source descriptor and validated YAML revision
+  paired.
+
+### Fixed
+
+- Prevent an active subscription refresh from being skipped merely because its
+  profile ID did not change.
+- Re-synchronize a missing autostart-enabled shell session without undoing an
+  explicit stop.
+- Accept an installer-owned service definition from an older immutable release
+  while atomically updating its on-disk unit during an upgrade.
+- Make foreground session and desired-state operations fail fast on contended
+  locks while bounded startup polling continues to honor its timeout.
+
 ## [0.1.0-alpha.4] - 2026-08-17
 
 ### Added
@@ -120,7 +155,8 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Request Mihomo-compatible YAML from subscription services that select their
   response format from the client identifier.
 
-[Unreleased]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.4...HEAD
+[Unreleased]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.5...HEAD
+[0.1.0-alpha.5]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.4...v0.1.0-alpha.5
 [0.1.0-alpha.4]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.3...v0.1.0-alpha.4
 [0.1.0-alpha.3]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.2...v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.1...v0.1.0-alpha.2

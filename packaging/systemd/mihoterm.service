@@ -3,12 +3,12 @@ Description=MihoTerm managed Mihomo proxy
 Documentation=https://github.com/wxndong/mihoterm
 
 [Service]
-Type=oneshot
-ExecStart=%h/.local/bin/mihoterm start
-ExecStop=%h/.local/bin/mihoterm stop
-RemainAfterExit=yes
-TimeoutStartSec=45
-TimeoutStopSec=15
+Type=simple
+ExecStart=%h/.local/bin/mihoterm supervise
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=20
 
 [Install]
 WantedBy=default.target

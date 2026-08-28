@@ -18,6 +18,7 @@ use super::{
 const PROFILE_FILE: &str = "profile.yaml";
 const BACKUP_FILE: &str = "profile.previous.yaml";
 const SOURCE_FILE: &str = "source.toml";
+const BACKUP_SOURCE_FILE: &str = "source.previous.toml";
 const LOCK_FILE: &str = ".lock";
 const MAX_DESCRIPTOR_BYTES: u64 = 64 * 1024;
 // Many subscription services use this de facto client identifier to return
@@ -36,6 +37,11 @@ pub struct ProfileSummary {
     pub id: String,
     pub has_backup: bool,
     pub source: ProfileSourceSummary,
+}
+
+struct SourceSwap {
+    current: Vec<u8>,
+    backup: Vec<u8>,
 }
 
 impl ProfileStore {
@@ -125,7 +131,12 @@ impl ProfileStore {
         let backup = read_bounded(&backup_path, MAX_PROFILE_BYTES as u64)?;
         validate_profile(&current)?;
         validate_profile(&backup)?;
-        swap_files(&directory, &current, &backup)
+        let source_swap = read_source_swap(&directory)?;
+        swap_files(&directory, &current, &backup)?;
+        if let Some(source) = source_swap {
+            swap_source_files(&directory, &source.current, &source.backup)?;
+        }
+        Ok(())
     }
 
     pub fn list(&self) -> Result<Vec<ProfileSummary>, ProfileError> {
@@ -274,12 +285,17 @@ fn replace_with_backup(directory: &Path, contents: &[u8]) -> Result<(), ProfileE
     let current_path = directory.join(PROFILE_FILE);
     let backup_path = directory.join(BACKUP_FILE);
     let current = read_bounded(&current_path, MAX_PROFILE_BYTES as u64)?;
+    let current_source = read_bounded(&directory.join(SOURCE_FILE), MAX_DESCRIPTOR_BYTES)?;
     let next_temp = write_temporary(directory, "profile", contents)?;
     let backup_temp = write_temporary(directory, "backup", &current)?;
+    let source_backup_temp = write_temporary(directory, "source-backup", &current_source)?;
 
-    if fs::rename(&backup_temp, &backup_path).is_err() {
+    if fs::rename(&source_backup_temp, directory.join(BACKUP_SOURCE_FILE)).is_err()
+        || fs::rename(&backup_temp, &backup_path).is_err()
+    {
         let _ = fs::remove_file(&next_temp);
         let _ = fs::remove_file(&backup_temp);
+        let _ = fs::remove_file(&source_backup_temp);
         return Err(ProfileError::Storage);
     }
     if fs::rename(&next_temp, &current_path).is_err() {
@@ -298,14 +314,19 @@ fn replace_source_with_backup(
     let current_path = directory.join(PROFILE_FILE);
     let backup_path = directory.join(BACKUP_FILE);
     let current = read_bounded(&current_path, MAX_PROFILE_BYTES as u64)?;
+    let current_source = read_bounded(&source_path, MAX_DESCRIPTOR_BYTES)?;
     let source_temp = write_temporary(directory, "source", source.descriptor()?.as_bytes())?;
     let next_temp = write_temporary(directory, "profile", contents)?;
     let backup_temp = write_temporary(directory, "backup", &current)?;
+    let source_backup_temp = write_temporary(directory, "source-backup", &current_source)?;
 
-    if fs::rename(&backup_temp, &backup_path).is_err() {
+    if fs::rename(&source_backup_temp, directory.join(BACKUP_SOURCE_FILE)).is_err()
+        || fs::rename(&backup_temp, &backup_path).is_err()
+    {
         let _ = fs::remove_file(&source_temp);
         let _ = fs::remove_file(&next_temp);
         let _ = fs::remove_file(&backup_temp);
+        let _ = fs::remove_file(&source_backup_temp);
         return Err(ProfileError::Storage);
     }
     if fs::rename(&source_temp, &source_path).is_err() {
@@ -336,6 +357,40 @@ fn swap_files(directory: &Path, current: &[u8], backup: &[u8]) -> Result<(), Pro
         return Err(ProfileError::Storage);
     }
     sync_directory(directory)
+}
+
+fn swap_source_files(directory: &Path, current: &[u8], backup: &[u8]) -> Result<(), ProfileError> {
+    let current_path = directory.join(SOURCE_FILE);
+    let backup_path = directory.join(BACKUP_SOURCE_FILE);
+    let current_temp = write_temporary(directory, "rollback-source-current", backup)?;
+    let backup_temp = write_temporary(directory, "rollback-source-backup", current)?;
+
+    if fs::rename(&backup_temp, &backup_path).is_err() {
+        let _ = fs::remove_file(&current_temp);
+        let _ = fs::remove_file(&backup_temp);
+        return Err(ProfileError::Storage);
+    }
+    if fs::rename(&current_temp, &current_path).is_err() {
+        let _ = fs::rename(&current_temp, &backup_path);
+        return Err(ProfileError::Storage);
+    }
+    sync_directory(directory)
+}
+
+fn read_source_swap(directory: &Path) -> Result<Option<SourceSwap>, ProfileError> {
+    let backup_path = directory.join(BACKUP_SOURCE_FILE);
+    if !backup_path.exists() {
+        return Ok(None);
+    }
+    let current = read_bounded(&directory.join(SOURCE_FILE), MAX_DESCRIPTOR_BYTES)?;
+    let backup = read_bounded(&backup_path, MAX_DESCRIPTOR_BYTES)?;
+    let current_text =
+        std::str::from_utf8(&current).map_err(|_| ProfileError::InvalidSourceDescriptor)?;
+    let backup_text =
+        std::str::from_utf8(&backup).map_err(|_| ProfileError::InvalidSourceDescriptor)?;
+    ProfileSource::from_descriptor(current_text)?;
+    ProfileSource::from_descriptor(backup_text)?;
+    Ok(Some(SourceSwap { current, backup }))
 }
 
 fn read_source(directory: &Path) -> Result<ProfileSource, ProfileError> {
@@ -496,6 +551,19 @@ mod tests {
         assert_eq!(
             store.list().expect("list should work")[0].source.display,
             replacement_path.to_string_lossy()
+        );
+
+        store
+            .rollback("primary")
+            .expect("profile and source should roll back together");
+        assert!(
+            fs::read_to_string(&profile_path)
+                .expect("rolled-back profile should be readable")
+                .contains("Proxy A")
+        );
+        assert_eq!(
+            store.list().expect("list should work")[0].source.display,
+            original_path.to_string_lossy()
         );
 
         fs::remove_dir_all(base).expect("test directory should be removed");

@@ -1,12 +1,15 @@
 # Managed Runtime
 
-Managed mode owns one persistent, per-user Mihomo process. It is the default
-end-user mode, while attaching to an existing controller remains explicit:
+Managed mode owns one persistent, per-user supervisor and its Mihomo child. It
+is the default end-user mode, while attaching to an existing controller
+remains explicit:
 
 ```console
 $ mihoterm
 $ mihoterm start
 $ mihoterm status
+$ mihoterm doctor
+$ mihoterm doctor --repair
 $ mihoterm stop
 $ mihoterm run primary
 $ mihoterm attach
@@ -21,8 +24,11 @@ modifies a system service, or changes another Mihomo instance.
 
 ## Lifecycle
 
-`mihoterm`, `run`, `start`, `shell`, and `exec` start the managed process if it
-does not already exist. A subsequent command reuses the same verified session.
+`mihoterm`, `run`, `start`, `shell`, and `exec` start the supervisor if it does
+not already exist. A subsequent command reuses the same verified session. If
+Mihomo exits unexpectedly, the supervisor restarts the exact child with bounded
+backoff while preserving the session identifier, proxy listener, credentials,
+and runtime configuration.
 The managed TUI can switch to another stored profile through a confirmed,
 transactional hot reload. It preserves the loopback ports and credentials,
 updates the private session descriptor only after Mihomo accepts the new
@@ -30,10 +36,12 @@ configuration, and restores the previous configuration if persistence fails.
 Requesting a different profile from a separate lifecycle command while one is
 active still fails visibly.
 
-A cold managed start derives `mode: global` regardless of the mode stored in
-the source profile. The source profile is never rewritten. A confirmed mode
-change applies to the current session, and a profile hot switch preserves that
-current runtime mode. Attach mode never changes an external controller's mode.
+The first cold managed start derives `mode: global` regardless of the mode
+stored in the source profile. Later starts restore MihoTerm's durable desired
+mode and valid selector choices. The source profile is never rewritten. A
+confirmed mode change applies to the current session and persistent intent;
+profile hot switches preserve the current runtime mode. Attach mode never
+changes an external controller's mode.
 
 Closing the TUI with `q` or `Ctrl-C` leaves the proxy running. This makes the
 TUI a control surface rather than the lifetime owner. `mihoterm stop` and
@@ -42,20 +50,22 @@ TUI a control surface rather than the lifetime owner. `mihoterm stop` and
 The owner-only session descriptor records:
 
 - a random session identifier;
-- the PID and Linux `/proc` start-time value;
+- the supervisor and child PIDs plus Linux `/proc` start-time values;
 - the exact per-run configuration path;
 - the active profile;
 - loopback controller and mixed ports; and
 - generated controller and mixed-proxy credentials.
 
 Before status, environment export, or stop, MihoTerm verifies the descriptor,
-PID start time, command line, and runtime path. A recycled PID or altered
-descriptor is rejected and never signaled.
+PID start times, command lines, and runtime path. A recycled PID or altered
+descriptor is rejected and never signaled. Version-1 descriptors from alpha.4
+remain readable during upgrades.
 
 ## Startup sequence
 
 1. Resolve and verify the selected Mihomo executable.
-2. Create one mode `0700` per-run directory under the XDG runtime directory.
+2. Resolve a stable owner-only runtime root from XDG, `/run/user/UID`, or the
+   durable state fallback, then create one mode `0700` per-run directory.
 3. Copy regular, size-bounded bundled GeoIP/GeoSite files into the private
    runtime home; symbolic links are rejected.
 4. Reserve distinct ephemeral TCP ports on `127.0.0.1`.
@@ -64,8 +74,15 @@ descriptor is rejected and never signaled.
 7. Write configuration, logs, and the session descriptor as mode `0600` files.
 8. Run Mihomo `-t` against the exact derived YAML.
 9. Release the port reservations immediately before spawning Mihomo.
-10. Start Mihomo in a detached session and wait for the authenticated loopback
+10. Start Mihomo beneath the supervisor and wait for the authenticated loopback
     controller to report its version.
+11. Atomically record the active profile revision, mode, selector choices, and
+    session identities before reporting readiness.
+
+Foreground commands use non-blocking session and desired-state locks. A
+concurrent lifecycle operation reports busy state instead of hanging
+indefinitely; the bounded startup path retries session contention until its
+deadline and then terminates only the exact supervisor it launched.
 
 The validation and live process receive a cleared environment, a private home
 and temporary directory, and `umask 077`.
@@ -100,9 +117,10 @@ The source profile is never rewritten.
 ## Optional automatic startup
 
 The portable installer offers to register `mihoterm.service` with the current
-user's service manager and defaults to yes. The unit calls the same exact-PID
-`start` and `stop` lifecycle described above; it does not adopt or search for
-other Mihomo processes. `--no-autostart` keeps the original on-demand model.
+user's service manager and defaults to yes. The `Type=simple` unit runs
+`mihoterm supervise` in the foreground, restarts it only after failure, and
+uses the service manager's own restart limiting. It does not adopt or search
+for other Mihomo processes. `--no-autostart` keeps the on-demand model.
 
 On a shared server, boot-before-login requires lingering to be enabled for the
 specific account by an administrator. Without lingering, the unit starts with
@@ -123,8 +141,10 @@ $ mihoterm shell
 ```
 
 The installer-managed Bash integration performs the `env` synchronization
-after lifecycle commands and restores earlier proxy variables after stop.
-Credentials are not printed by normal status commands or stored in `.bashrc`.
+after lifecycle commands and restores earlier proxy variables after stop. On
+shell startup it attempts one start only when the installer-managed autostart
+link is enabled; an explicit `mihoterm stop` remains stopped. Credentials are
+not printed by normal status commands or stored in `.bashrc`.
 
 Environment variables affect applications that support them and are launched
 from that environment. They are not transparent packet capture. MihoTerm does
@@ -141,15 +161,33 @@ The runtime root itself remains as a mode `0700` directory. A stale descriptor
 whose process no longer matches is cleaned without signaling the new PID
 owner.
 
+## Health and recovery
+
+The supervisor performs low-frequency health checks only in Global mode. A
+healthy result requires the OpenAI/Codex probe and at least one of the Google
+or GitHub probes. Two failed observations are required before automatic
+recovery. Recovery has a durable ten-minute cooldown and is limited to:
+
+1. restarting an unresponsive exact child;
+2. refreshing and validating the active subscription, then applying it with
+   Mihomo `force=false` so listeners remain intact;
+3. remembered healthy choices; and
+4. fallback or URL-test groups already authored by the profile.
+
+MihoTerm never scans arbitrary leaf nodes. Failed refresh/apply attempts roll
+back the stored profile and runtime configuration. `mihoterm doctor` reports
+the profile revision, controller, three probes, and same-UID processes that
+inherited a different session marker. `doctor --repair` runs the same bounded
+recovery immediately and never kills inherited client processes. An explicit
+profile hot reload also performs the remembered/profile-authored selection
+portion immediately, avoiding a multi-minute wait for the background interval.
+
 ## Current limitations
 
 - Managed mode is Linux-only.
 - Relative local provider and rule files are resolved inside the isolated
   runtime home. Use HTTP providers or absolute owner-controlled paths until
   resource import is implemented.
-- Updating the active subscription profile does not apply it immediately.
-  Switch away and back in the managed TUI, or stop and restart after a
-  validated update.
 - Transparent TUN capture is intentionally not available in the rootless
   default mode.
 

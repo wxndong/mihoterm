@@ -68,6 +68,9 @@ pub enum RuntimeError {
     #[error("failed to initialize the isolated Mihomo API client")]
     ApiInitialization,
 
+    #[error("failed to read or write durable managed-session state")]
+    PersistentState,
+
     #[error("isolated Mihomo exited unexpectedly (exit code {code:?})")]
     UnexpectedExit { code: Option<i32> },
 
@@ -76,6 +79,9 @@ pub enum RuntimeError {
 
     #[error("failed to lock the managed proxy session")]
     SessionLock,
+
+    #[error("the managed proxy session is busy")]
+    SessionBusy,
 
     #[error("failed to read the managed proxy session")]
     SessionRead,
@@ -86,6 +92,9 @@ pub enum RuntimeError {
     #[error("failed to write the managed proxy session")]
     SessionWrite,
 
+    #[error("a managed proxy supervisor is already running")]
+    SessionAlreadyRunning,
+
     #[error("a different managed profile is already running; stop it before switching profiles")]
     SessionProfileConflict,
 
@@ -94,6 +103,12 @@ pub enum RuntimeError {
 
     #[error("failed to stop the managed proxy session")]
     SessionStop,
+
+    #[error("failed to install managed proxy supervisor signal handlers")]
+    SupervisorSignal,
+
+    #[error("Mihomo exceeded the supervised restart limit (last exit code {code:?})")]
+    SupervisorRestartLimit { code: Option<i32> },
 
     #[error("the managed proxy rejected the selected profile")]
     SessionReload,
