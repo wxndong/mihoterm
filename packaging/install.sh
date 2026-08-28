@@ -484,7 +484,9 @@ install_bundle() {
 
 case "${1:-install}" in
     install)
-        shift || true
+        if [ "$#" -gt 0 ]; then
+            shift
+        fi
         install_bundle "$@"
         ;;
     uninstall)
