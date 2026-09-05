@@ -97,3 +97,18 @@ Environment variables use the `MIHOTERM_` prefix.
 commands should use dedicated temporary values instead of the user's normal
 directories. `MIHOTERM_RUNTIME_DIR` overrides transient managed-runtime data,
 and `MIHOTERM_MIHOMO` selects the Mihomo executable.
+
+
+## Real-core resilience gate
+
+The opt-in regression uses only isolated loopback HTTP and DNS fixtures.
+It tests an unresponsive UDP resolver with a working TCP alternative, explicit
+group reconnect, no-op and rejected selections, TUI exit, live profile reload,
+child crash recovery, and stop/start with the old client credentials.
+
+    python3 scripts/test-resilience.py --binary "$CARGO_TARGET_DIR/release/mihoterm" \
+      --mihomo /path/to/bundled/mihomo --root "$TMPDIR"
+
+It stops only its recorded child/supervisor and retains private diagnostics
+under the supplied root. Real subscription checks must use an explicitly
+authorized external profile and must not copy its URL or credentials into Git.

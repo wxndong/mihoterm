@@ -118,9 +118,60 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     match command {
         Some(Command::Profile { command }) => run_profile(command, &paths).await,
+        Some(Command::Select {
+            group,
+            proxy,
+            reconnect,
+        }) => {
+            let client = if let Some(controller) = controller.as_deref() {
+                ApiClient::with_timeout(
+                    controller,
+                    load_controller_secret(secret_file.as_deref())?,
+                    Duration::from_millis(timeout_ms),
+                )?
+            } else {
+                managed_session_manager(&paths)?
+                    .active()?
+                    .ok_or(RuntimeError::SessionNotRunning)?
+                    .api_client(Duration::from_millis(timeout_ms))?
+            };
+            let report = if reconnect {
+                client.select_proxy_reconnecting(&group, &proxy).await?
+            } else {
+                client.select_proxy(&group, &proxy).await?;
+                mihoterm::mihomo::ReconnectReport::default()
+            };
+            if controller.is_none() {
+                DesiredStateStore::new(paths.state_dir().to_owned())?
+                    .record_selection(&group, &proxy)?;
+            }
+            println!(
+                "Selected {proxy} in {group}; closed {}/{} old connections",
+                report.closed, report.matched
+            );
+            if report.incomplete() != 0 {
+                return Err(format!(
+                    "selection succeeded; {} connections could not be closed",
+                    report.incomplete()
+                )
+                .into());
+            }
+            Ok(())
+        }
         Some(Command::Start { profile, mihomo }) => {
             let session =
                 start_session_direct(profile.as_deref(), mihomo.as_deref(), &paths).await?;
+            let configuration = session
+                .api_client(Duration::from_secs(5))?
+                .configuration()
+                .await?;
+            println!(
+                "Managed runtime | tcp-concurrent={} | durable-endpoint={}",
+                configuration
+                    .tcp_concurrent
+                    .map_or_else(|| "unknown".into(), |v| v.to_string()),
+                paths.state_dir().join("endpoint.json").is_file(),
+            );
             println!(
                 "Managed proxy running | profile {} | mixed 127.0.0.1:{} | pid {}",
                 session.profile(),

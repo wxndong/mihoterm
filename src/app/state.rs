@@ -78,12 +78,18 @@ pub enum Action {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Operation {
     SelectProxy { group: String, proxy: String },
+    SelectProxyAndReconnect { group: String, proxy: String },
     SetMode { mode: OperatingMode },
     Probe { proxy: String, target: ProbeTarget },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperationSuccess {
+    ProxyReconnected {
+        group: String,
+        proxy: String,
+        report: crate::mihomo::ReconnectReport,
+    },
     ProxySelected {
         group: String,
         proxy: String,
@@ -325,6 +331,11 @@ impl App {
         false
     }
 
+    #[must_use]
+    pub fn confirming_proxy_selection(&self) -> bool {
+        matches!(self.pending, Some(PendingChange::SelectProxy { .. }))
+    }
+
     pub fn mark_refreshing(&mut self) {
         self.status = StatusLine {
             kind: StatusKind::Info,
@@ -335,6 +346,25 @@ impl App {
     pub fn apply_operation_result(&mut self, result: Result<OperationSuccess, OperationError>) {
         self.operation_in_flight = false;
         match result {
+            Ok(OperationSuccess::ProxyReconnected {
+                group,
+                proxy,
+                report,
+            }) => {
+                self.apply_operation_result(Ok(OperationSuccess::ProxySelected { group, proxy }));
+                self.status.kind = if report.incomplete() == 0 {
+                    StatusKind::Ready
+                } else {
+                    StatusKind::Error
+                };
+                self.status.message = format!(
+                    "{}; closed {}/{} old connections; {} incomplete",
+                    self.status.message,
+                    report.closed,
+                    report.matched,
+                    report.incomplete()
+                );
+            }
             Ok(OperationSuccess::ProxySelected { group, proxy }) => {
                 if let Some(group_state) = self
                     .snapshot
@@ -1012,6 +1042,20 @@ impl App {
     }
 
     fn handle_confirm_input(&mut self, input: Input) -> Action {
+        if matches!(input, Input::Character('r' | 'R'))
+            && let Some(PendingChange::SelectProxy { group, proxy }) = self.pending.clone()
+        {
+            self.pending = None;
+            self.input_mode = InputMode::Normal;
+            self.operation_in_flight = true;
+            self.status = StatusLine {
+                kind: StatusKind::Info,
+                message: format!(
+                    "Selecting {proxy} and reconnecting this group's old connections..."
+                ),
+            };
+            return Action::Execute(Operation::SelectProxyAndReconnect { group, proxy });
+        }
         match input {
             Input::Enter | Input::Character('y' | 'Y') => {
                 let Some(pending) = self.pending.take() else {
@@ -1126,7 +1170,9 @@ impl App {
         self.input_mode = InputMode::Confirm;
         self.status = StatusLine {
             kind: StatusKind::Info,
-            message: format!("Select {proxy_name} in {group_name}?"),
+            message: format!(
+                "Select {proxy_name} in {group_name}? y: keep connections; r: disconnect this group and reconnect"
+            ),
         };
     }
 
@@ -1516,6 +1562,22 @@ mod tests {
                 proxy: "Proxy A".into(),
             })
         );
+    }
+
+    #[test]
+    fn reconnect_requires_explicit_confirmation() {
+        let mut app = loaded_app();
+        app.handle_input(Input::Right);
+        app.handle_input(Input::Up);
+        app.handle_input(Input::Enter);
+        let action = app.handle_input(Input::Character('r'));
+        assert!(matches!(
+            action,
+            Action::Execute(Operation::SelectProxyAndReconnect { .. })
+        ));
+        let mut app = loaded_app();
+        app.handle_input(Input::Character('m'));
+        assert_eq!(app.handle_input(Input::Character('r')), Action::None);
     }
 
     #[test]

@@ -84,6 +84,16 @@ pub enum Command {
         targets: Vec<String>,
     },
 
+    /// Select a proxy; --reconnect explicitly interrupts this group's old connections.
+    Select {
+        #[arg(long, value_name = "NAME")]
+        group: String,
+        #[arg(long, value_name = "NAME")]
+        proxy: String,
+        #[arg(long)]
+        reconnect: bool,
+    },
+
     /// Start or reuse the background managed proxy without opening the TUI.
     Start {
         /// Managed profile identifier; auto-select or guide setup when omitted.

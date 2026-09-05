@@ -10,6 +10,7 @@ pub enum OperatingMode {
 }
 
 impl OperatingMode {
+    pub const DISPLAY_ORDER: [Self; 3] = [Self::Rule, Self::Global, Self::Direct];
     #[must_use]
     pub fn from_api(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
@@ -84,6 +85,8 @@ pub struct VersionInfo {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct RuntimeConfig {
+    #[serde(default, rename = "tcp-concurrent")]
+    pub tcp_concurrent: Option<bool>,
     #[serde(default)]
     pub mode: Option<String>,
     #[serde(default, rename = "allow-lan")]
@@ -268,6 +271,15 @@ mod tests {
         assert_eq!(OperatingMode::Rule.label(), "规则 Rule");
         assert_eq!(OperatingMode::Direct.label(), "直连 Direct");
         assert_eq!(OperatingMode::from_api("RULE"), Some(OperatingMode::Rule));
+    }
+
+    #[test]
+    fn navigation_follows_display_order_in_both_directions() {
+        let modes = OperatingMode::DISPLAY_ORDER;
+        for (i, mode) in modes.iter().enumerate() {
+            assert_eq!(mode.next(), modes[(i + 1) % modes.len()]);
+            assert_eq!(mode.previous(), modes[(i + modes.len() - 1) % modes.len()]);
+        }
     }
 
     #[test]

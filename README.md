@@ -28,7 +28,7 @@ network.
 - Inspect the Mihomo version, mode, policy groups, proxies, health state, and
   latest recorded delay.
 - Inspect live connections and real-time throughput in a read-only table.
-- Select proxies and modes through an explicit confirmation step.
+- Select proxies and modes through an explicit confirmation step; optionally reconnect only the selected group's existing connections.
 - Probe Google, OpenAI, or GitHub without changing the active proxy.
 - Load additional HTTPS probe targets from a protected TOML configuration.
 - Import Mihomo YAML from a protected subscription URL file or local file.
@@ -56,7 +56,7 @@ network.
 
 ## Planned capabilities
 
-- Inspect rule and proxy providers; close active connections.
+- Inspect rule and proxy providers.
 - Validate portable archives on aarch64 and armv7 Linux.
 
 ## Non-goals
@@ -136,6 +136,7 @@ $ mihoterm start
 $ mihoterm status
 $ mihoterm doctor
 $ mihoterm doctor --repair
+$ mihoterm select --group "AI" --proxy "Proxy B" --reconnect
 $ mihoterm probe --proxy "Proxy A"
 $ mihoterm probe --proxy "Proxy A" --target Google --target openai
 $ eval "$(mihoterm env)"
@@ -172,8 +173,8 @@ The TUI is keyboard-first:
 
 - `Up` and `Down` move within the focused list.
 - `Left`, `Right`, or `Tab` switch between policy groups and proxies.
-- `Enter` selects a proxy after confirmation.
-- `m` opens an explicit chooser for Global, Rule, and Direct modes, with a
+- `Enter` opens proxy confirmation: `y` keeps existing connections; `r` switches and disconnects only that group's captured old connections.
+- `m` opens an explicit chooser for Rule, Global, and Direct modes, with a
   short description and confirmation.
 - `d` probes the selected proxy against the active target.
 - `p` cycles through Google, OpenAI, and GitHub probe targets.

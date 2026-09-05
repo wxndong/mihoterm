@@ -2,7 +2,7 @@
 set -euo pipefail
 
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-fixture_root=$(mktemp -d "$project_dir/target/shell-test.XXXXXXXX")
+fixture_root=$(mktemp -d "${TMPDIR:-/tmp}/mihoterm-shell-test.XXXXXXXX")
 trap 'rm -rf -- "$fixture_root"' EXIT
 
 bundle=$fixture_root/bundle

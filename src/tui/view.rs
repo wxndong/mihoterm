@@ -267,11 +267,7 @@ fn render_mode_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         width,
         height,
     };
-    let modes = [
-        OperatingMode::Global,
-        OperatingMode::Rule,
-        OperatingMode::Direct,
-    ];
+    let modes = OperatingMode::DISPLAY_ORDER;
     let items = modes
         .iter()
         .map(|mode| ListItem::new(format!("{} — {}", mode.label(), mode.description())))
@@ -367,6 +363,11 @@ fn footer_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             format!("/{}", app.search),
             "Enter keep".into(),
             "Esc clear".into(),
+        ],
+        InputMode::Confirm if app.confirming_proxy_selection() => vec![
+            "y/Enter keep streams".into(),
+            "r reconnect group".into(),
+            "n/Esc cancel".into(),
         ],
         InputMode::Confirm => vec!["y/Enter confirm".into(), "n/Esc cancel".into()],
         InputMode::Mode => vec![

@@ -1,5 +1,6 @@
 use std::{fmt, sync::Arc, time::Duration};
 
+use futures_util::{StreamExt, stream};
 use reqwest::{Method, RequestBuilder};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Serialize, de::DeserializeOwned};
@@ -17,6 +18,19 @@ use super::{
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_JSON_BYTES: usize = 32 * 1024 * 1024;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ReconnectReport {
+    pub matched: usize,
+    pub closed: usize,
+}
+
+impl ReconnectReport {
+    #[must_use]
+    pub const fn incomplete(self) -> usize {
+        self.matched.saturating_sub(self.closed)
+    }
+}
 
 #[derive(Clone)]
 pub struct ApiClient {
@@ -89,6 +103,53 @@ impl ApiClient {
                 .json(&Selection { name: proxy }),
         );
         self.send_empty(operation, request).await
+    }
+
+    /// Close one connection; an already-finished connection is also success.
+    pub async fn close_connection(&self, id: &str) -> Result<(), ApiError> {
+        let operation = "close connection";
+        let endpoint = self.endpoint_segments(operation, &["connections", id])?;
+        let request = self.authorize(self.http.request(Method::DELETE, endpoint));
+        match self.send_empty(operation, request).await {
+            Err(ApiError::UnexpectedStatus { status: 404, .. }) | Ok(()) => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Snapshot before selection so new connections and other groups survive.
+    /// Selection failures never close connections; partial cleanup is explicit.
+    pub async fn select_proxy_reconnecting(
+        &self,
+        group: &str,
+        proxy: &str,
+    ) -> Result<ReconnectReport, ApiError> {
+        let proxies = self.proxies().await?;
+        if proxies.proxies.get(group).and_then(|p| p.now.as_deref()) == Some(proxy) {
+            return Ok(ReconnectReport::default());
+        }
+        let ids = self
+            .connections()
+            .await?
+            .connections
+            .into_iter()
+            .filter(|c| c.chains.iter().any(|name| name == group) && !c.id.is_empty())
+            .map(|c| c.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        self.select_proxy(group, proxy).await?;
+        let mut report = ReconnectReport {
+            matched: ids.len(),
+            closed: 0,
+        };
+        let mut pending = stream::iter(ids)
+            .map(|id| async move { self.close_connection(&id).await })
+            .buffer_unordered(4);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while let Ok(Some(result)) = tokio::time::timeout_at(deadline, pending.next()).await {
+            if result.is_ok() {
+                report.closed += 1;
+            }
+        }
+        Ok(report)
     }
 
     pub async fn set_mode(&self, mode: OperatingMode) -> Result<(), ApiError> {

@@ -38,3 +38,9 @@ stored subscription YAML is never sent directly.
 
 Contract tests bind to an operating-system-assigned loopback port and never
 connect to a live Mihomo instance.
+
+Explicit reconnect uses GET proxies, GET connections, PUT selection, then
+DELETE individual encoded connection IDs. HTTP 404 on deletion means the
+connection already ended. No automatic or all-connections deletion is exposed.
+The select CLI is itself an explicit mutation request; TUI reconnect requires
+its distinct confirmation key.

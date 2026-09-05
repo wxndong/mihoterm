@@ -338,3 +338,122 @@ fn temporary_directory() -> PathBuf {
         std::process::id()
     ))
 }
+
+#[tokio::test]
+async fn reconnect_closes_only_pre_switch_group_connections_and_reports_partial_failure() {
+    let (controller, requests) = spawn_scripted_json_server(vec![
+        (
+            "GET /api/proxies ",
+            "200 OK",
+            r#"{"proxies":{"Group":{"now":"Old"}}}"#,
+        ),
+        (
+            "GET /api/connections ",
+            "200 OK",
+            r#"{"connections":[
+            {"id":"old / one","chains":["Old","Group","GLOBAL"]},
+            {"id":"old-two","chains":["Old","Group"]},
+            {"id":"finished","chains":["Old","Group"]},
+            {"id":"other","chains":["Old","Other"]},
+            {"id":"unknown"}
+        ]}"#,
+        ),
+        ("PUT /api/proxies/Group ", "204 No Content", ""),
+        (
+            "DELETE /api/connections/old%20%2F%20one ",
+            "204 No Content",
+            "",
+        ),
+        (
+            "DELETE /api/connections/old-two ",
+            "500 Internal Server Error",
+            "private-response",
+        ),
+        ("DELETE /api/connections/finished ", "404 Not Found", ""),
+    ])
+    .await;
+    let client = ApiClient::new(&controller, Some("fixture-token".into())).unwrap();
+    let report = client
+        .select_proxy_reconnecting("Group", "New")
+        .await
+        .unwrap();
+    assert_eq!(report.matched, 3);
+    assert_eq!(report.closed, 2);
+    assert_eq!(report.incomplete(), 1);
+    let requests = requests.await.unwrap();
+    assert!(requests[0].starts_with("GET /api/proxies "));
+    assert!(requests[1].starts_with("GET /api/connections "));
+    assert!(requests[2].starts_with("PUT /api/proxies/Group "));
+    assert!(
+        requests
+            .iter()
+            .all(|r| !r.starts_with("DELETE /api/connections "))
+    );
+    assert!(requests.iter().all(|r| {
+        r.to_ascii_lowercase()
+            .contains("authorization: bearer fixture-token")
+    }));
+}
+
+#[tokio::test]
+async fn failed_selection_never_closes_existing_connections() {
+    let (controller, requests) = spawn_scripted_json_server(vec![
+        (
+            "GET /api/proxies ",
+            "200 OK",
+            r#"{"proxies":{"Group":{"now":"Old"}}}"#,
+        ),
+        (
+            "GET /api/connections ",
+            "200 OK",
+            r#"{"connections":[{"id":"old","chains":["Group"]}]}"#,
+        ),
+        ("PUT /api/proxies/Group ", "400 Bad Request", ""),
+    ])
+    .await;
+    let client = ApiClient::new(&controller, None).unwrap();
+    assert!(
+        client
+            .select_proxy_reconnecting("Group", "Missing")
+            .await
+            .is_err()
+    );
+    assert_eq!(requests.await.unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn failed_connection_snapshot_does_not_change_selection() {
+    let (controller, requests) = spawn_scripted_json_server(vec![
+        (
+            "GET /api/proxies ",
+            "200 OK",
+            r#"{"proxies":{"Group":{"now":"Old"}}}"#,
+        ),
+        ("GET /api/connections ", "503 Service Unavailable", ""),
+    ])
+    .await;
+    let client = ApiClient::new(&controller, None).unwrap();
+    assert!(
+        client
+            .select_proxy_reconnecting("Group", "New")
+            .await
+            .is_err()
+    );
+    assert_eq!(requests.await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn reselecting_current_proxy_does_not_interrupt_connections() {
+    let (controller, request) =
+        spawn_json_once("200 OK", r#"{"proxies":{"Group":{"now":"Current"}}}"#).await;
+    let client = ApiClient::new(&controller, None).unwrap();
+    assert_eq!(
+        client
+            .select_proxy_reconnecting("Group", "Current")
+            .await
+            .unwrap()
+            .matched,
+        0
+    );
+    assert!(request.await.unwrap().starts_with("GET /api/proxies "));
+}

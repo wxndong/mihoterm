@@ -2,7 +2,7 @@ mod client;
 mod error;
 mod model;
 
-pub use client::ApiClient;
+pub use client::{ApiClient, ReconnectReport};
 pub use error::{ApiError, RequestFailure};
 pub use model::{
     Connection, ConnectionMetadata, ConnectionsResponse, DelayResponse, DelaySample, OperatingMode,
