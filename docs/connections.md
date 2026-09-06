@@ -51,3 +51,21 @@ core exposing those counters, which all current Mihomo versions do.
 The connection list is not paginated; every active connection is fetched each
 cycle. A very large connection count is bounded only by the controller's 32 MiB
 response limit.
+
+## Explicit reconnect
+
+Normal selection affects new connections. In its confirmation prompt, `r`
+selects and reconnects the affected group; `y` retains existing streams.
+The equivalent explicit command is:
+
+```console
+mihoterm select --group "AI" --proxy "Proxy B" --reconnect
+```
+
+MihoTerm captures connection IDs whose recorded chain contains the selected
+group before changing the selection, then closes only those IDs. Other groups
+and newly established connections are not swept. No all-connections DELETE is
+used. Snapshot or selection failure does not close streams. Cleanup has four
+workers and a ten-second total deadline; partial failure is reported as a
+successful selection with incomplete cleanup. Re-selecting the current proxy
+is a no-op. Clients must reconnect; an in-flight response can be interrupted.

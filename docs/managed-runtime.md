@@ -68,9 +68,9 @@ remain readable during upgrades.
    durable state fallback, then create one mode `0700` per-run directory.
 3. Copy regular, size-bounded bundled GeoIP/GeoSite files into the private
    runtime home; symbolic links are rejected.
-4. Reserve distinct ephemeral TCP ports on `127.0.0.1`.
+4. Reserve the saved loopback ports, or allocate them on first use.
 5. Read the owner-only managed profile and derive a hardened runtime YAML.
-6. Generate independent 256-bit controller and mixed-proxy credentials.
+6. Reuse the owner-only durable endpoint identity, or generate it on first use.
 7. Write configuration, logs, and the session descriptor as mode `0600` files.
 8. Run Mihomo `-t` against the exact derived YAML.
 9. Release the port reservations immediately before spawning Mihomo.
@@ -94,7 +94,7 @@ ordinary outbound behavior. It overrides inbound and system-changing settings:
 
 - `allow-lan` is false and `bind-address` is `127.0.0.1`;
 - HTTP, SOCKS, redirect, and TProxy ports are disabled;
-- one mixed proxy port and one controller port are dynamically allocated;
+- one mixed proxy port and one controller port are allocated on first use and retained;
 - the mixed port requires a generated username and password;
 - TUN, iptables, NTP system writes, TUIC server, custom listeners, and tunnels
   are disabled;
@@ -103,16 +103,43 @@ ordinary outbound behavior. It overrides inbound and system-changing settings:
   disabled; and
 - generated controller credentials replace stored values.
 
-When a profile enables DNS but omits a dedicated node-domain resolver, the
-derived runtime reuses that profile's non-empty `default-nameserver` value as
-`proxy-server-nameserver`. It also makes Mihomo's default
-`respect-rules: false` behavior explicit when the profile does not set the
-field. This prevents proxy-node DNS bootstrap from depending on the proxy it
-is trying to start without selecting a resolver provider on the user's
-behalf. Any explicit `respect-rules` or `proxy-server-nameserver` value is
-preserved, including an explicitly empty node resolver list.
+Managed mode forces `tcp-concurrent: true`: Mihomo races the addresses of a
+node hostname instead of letting an unreachable first address exhaust a shared
+dial deadline. This is printed in the managed launch contract.
+
+When DNS is enabled and `proxy-server-nameserver` is absent, MihoTerm derives a
+bounded pool (at most eight entries) from dynamic `system` DNS and the profile's
+direct HTTPS/TLS/TCP resolvers and bootstrap IPs, including TCP alternatives.
+It also adds `system` to the bootstrap pool used to resolve DNS-server names.
+No resolver provider or subscription is embedded. Proxy-routed fragments,
+RULES routing, and certificate-verification bypasses are not imported into the
+derived node pool. Explicit node resolver settings, including an empty list,
+remain authoritative.
+
+Mihomo owns concurrent DNS queries, TTL caches, and failed-request handling.
+Its bundled v1.19.29 system resolver refreshes from the host configuration on
+query after a five-minute interval. MihoTerm does not rewrite system DNS,
+restart the core, clear all connections, or reload configuration on individual
+query failures. This is native resolver failover, not an answer-consensus or
+DNS-poisoning detector: a responsive resolver can still return an incorrect
+answer or NXDOMAIN. Explicit DNS policies should be used on such networks.
 
 The source profile is never rewritten.
+
+## Durable client endpoint
+
+The protected state directory retains `endpoint.json` with the session marker,
+loopback ports, and authentication identity. Closing the TUI, child recovery,
+and later stop/start cycles preserve that contract; existing applications can
+reconnect using their inherited environment. Explicit stop still interrupts
+traffic until a later start. There is no seamless migration of a live TCP stream.
+
+The endpoint file must be a same-owner regular file with private permissions;
+symlinks and malformed identities are rejected. Occupied saved ports cause a
+visible startup failure instead of silently moving old clients to a dead
+endpoint. The identity is created when the new version starts its first managed
+session; it does not retrofit already-running legacy endpoints. Uninstall with
+`--purge` removes the identity along with the protected state.
 
 ## Optional automatic startup
 
@@ -174,7 +201,11 @@ recovery. Recovery has a durable ten-minute cooldown and is limited to:
 3. remembered healthy choices; and
 4. fallback or URL-test groups already authored by the profile.
 
-MihoTerm never scans arbitrary leaf nodes. Failed refresh/apply attempts roll
+MihoTerm never scans arbitrary leaf nodes. If the active GLOBAL selection leads
+through selectors to a fallback/URL-test group, that subtree is the recovery
+boundary: automatic recovery does not escape into another GLOBAL group. Region
+and provider constraints belong in the user's profile, not in software name
+heuristics. Failed refresh/apply attempts roll
 back the stored profile and runtime configuration. `mihoterm doctor` reports
 the profile revision, controller, three probes, and same-UID processes that
 inherited a different session marker. `doctor --repair` runs the same bounded

@@ -33,6 +33,7 @@ pub(super) fn build_managed_config(
     set_number(root, "mixed-port", u64::from(mixed_port));
     set_string(root, "mode", mode.as_str());
     set_bool(root, "allow-lan", false);
+    set_bool(root, "tcp-concurrent", true);
     set_string(root, "bind-address", "127.0.0.1");
     set_sequence(
         root,
@@ -88,25 +89,76 @@ fn harden_dns_bootstrap(dns: &mut Mapping) {
         return;
     }
 
-    if let Some(bootstrap_nameservers) = dns
-        .get(string("default-nameserver"))
-        .and_then(nameserver_sequence)
-    {
-        dns.insert(
-            string("proxy-server-nameserver"),
-            Value::Sequence(bootstrap_nameservers),
-        );
+    // Let Mihomo refresh system DNS and race a small, independent resolver pool.
+    // Node bootstrap must never depend on the proxy being bootstrapped.
+    let defaults = resolver_values(dns.get(string("default-nameserver")));
+    let ordinary = resolver_values(dns.get(string("nameserver")));
+    let mut bootstrap = vec![string("system")];
+    for value in &defaults {
+        append_resolver(&mut bootstrap, value);
+    }
+    dns.insert(string("default-nameserver"), Value::Sequence(bootstrap));
+
+    let mut nodes = vec![string("system")];
+    // Preserve encrypted/TCP alternatives instead of dropping them when deriving
+    // proxy-server-nameserver from an UDP-only default-nameserver.
+    for value in ordinary.iter().chain(&defaults) {
+        if safe_direct_resolver(value, true) {
+            append_resolver(&mut nodes, value);
+        }
+    }
+    for value in &defaults {
+        if safe_direct_resolver(value, false) {
+            append_resolver(&mut nodes, value);
+            if let Some(address) = value.as_str()
+                && address.parse::<std::net::IpAddr>().is_ok()
+            {
+                let address = if address.contains(':') {
+                    format!("tcp://[{address}]")
+                } else {
+                    format!("tcp://{address}")
+                };
+                append_resolver(&mut nodes, &string(&address));
+            }
+        }
+    }
+    dns.insert(string("proxy-server-nameserver"), Value::Sequence(nodes));
+}
+
+const MAX_BOOTSTRAP_RESOLVERS: usize = 8;
+
+fn resolver_values(value: Option<&Value>) -> Vec<Value> {
+    match value {
+        Some(Value::String(value)) if !value.trim().is_empty() => vec![string(value)],
+        Some(Value::Sequence(values)) => values.clone(),
+        _ => Vec::new(),
     }
 }
 
-fn nameserver_sequence(value: &Value) -> Option<Vec<Value>> {
-    match value {
-        Value::String(value) if !value.trim().is_empty() => {
-            Some(vec![Value::String(value.clone())])
-        }
-        Value::Sequence(values) if !values.is_empty() => Some(values.clone()),
-        _ => None,
+fn append_resolver(values: &mut Vec<Value>, value: &Value) {
+    if values.len() < MAX_BOOTSTRAP_RESOLVERS
+        && value.as_str().is_some_and(|value| !value.trim().is_empty())
+        && !values.contains(value)
+    {
+        values.push(value.clone());
     }
+}
+
+fn safe_direct_resolver(value: &Value, reliable_transport: bool) -> bool {
+    let Some(value) = value.as_str() else {
+        return false;
+    };
+    if !reliable_transport && value.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    let Ok(url) = url::Url::parse(value) else {
+        return false;
+    };
+    matches!(url.scheme(), "https" | "tls" | "tcp")
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.fragment().is_none_or(|fragment| fragment == "DIRECT")
 }
 
 fn set_disabled_mapping(root: &mut Mapping, key: &str) {
@@ -146,6 +198,7 @@ mod tests {
     #[test]
     fn runtime_configuration_disables_unsafe_inbounds_and_system_changes() {
         let input = br#"
+tcp-concurrent: false
 mixed-port: 7890
 port: 7891
 socks-port: 7892
@@ -206,6 +259,7 @@ proxies:
         assert_eq!(value["redir-port"].as_u64(), Some(0));
         assert_eq!(value["tproxy-port"].as_u64(), Some(0));
         assert_eq!(value["allow-lan"].as_bool(), Some(false));
+        assert_eq!(value["tcp-concurrent"].as_bool(), Some(true));
         assert_eq!(value["bind-address"].as_str(), Some("127.0.0.1"));
         assert_eq!(
             value["authentication"][0].as_str(),
@@ -275,11 +329,11 @@ proxies:
         assert_eq!(value["dns"]["respect-rules"].as_bool(), Some(false));
         assert_eq!(
             value["dns"]["proxy-server-nameserver"][0].as_str(),
-            Some("223.5.5.5")
+            Some("system")
         );
         assert_eq!(
             value["dns"]["proxy-server-nameserver"][1].as_str(),
-            Some("119.29.29.29")
+            Some("https://dns.example/dns-query")
         );
     }
 
@@ -319,7 +373,7 @@ proxies:
     }
 
     #[test]
-    fn runtime_configuration_does_not_invent_dns_without_profile_defaults() {
+    fn runtime_configuration_uses_dynamic_system_dns_without_profile_defaults() {
         let input = br#"
 dns:
   enable: true
@@ -343,7 +397,10 @@ proxies:
         let value: Value = yaml_serde::from_slice(&output).expect("output should be YAML");
 
         assert_eq!(value["dns"]["respect-rules"].as_bool(), Some(false));
-        assert!(value["dns"]["proxy-server-nameserver"].is_null());
+        assert_eq!(
+            value["dns"]["proxy-server-nameserver"][0].as_str(),
+            Some("system")
+        );
     }
 
     #[test]
@@ -376,5 +433,43 @@ proxies:
                 .as_sequence()
                 .is_some_and(Vec::is_empty)
         );
+    }
+    #[test]
+    fn bootstrap_pool_excludes_proxy_routing_and_is_bounded() {
+        let mut dns: yaml_serde::Mapping = yaml_serde::from_str(
+            r#"
+enable: true
+default-nameserver: [223.5.5.5, 119.29.29.29]
+nameserver:
+  - https://dns.example/dns-query#Proxy
+  - https://dns.example/dns-query#RULES
+  - https://dns.example/dns-query#skip-cert-verify
+  - https://dns.example/dns-query#DIRECT
+  - tcp://192.0.2.1
+"#,
+        )
+        .unwrap();
+        super::harden_dns_bootstrap(&mut dns);
+        let nodes = dns[super::string("proxy-server-nameserver")]
+            .as_sequence()
+            .unwrap();
+        assert_eq!(nodes[0].as_str(), Some("system"));
+        assert!(nodes.iter().any(|v| v.as_str() == Some("tcp://223.5.5.5")));
+        assert!(
+            nodes
+                .iter()
+                .any(|v| v.as_str() == Some("https://dns.example/dns-query#DIRECT"))
+        );
+        assert!(!nodes.iter().any(|v| v.as_str().unwrap().contains("#RULES")));
+        assert!(!nodes.iter().any(|v| v.as_str().unwrap().contains("#Proxy")));
+        assert!(
+            !nodes
+                .iter()
+                .any(|v| v.as_str().unwrap().contains("skip-cert-verify"))
+        );
+        assert!(nodes.len() <= super::MAX_BOOTSTRAP_RESOLVERS);
+        let once = dns.clone();
+        super::harden_dns_bootstrap(&mut dns);
+        assert_eq!(dns, once);
     }
 }

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-fixture="$(mktemp -d "$project_dir/target/installer-test.XXXXXXXX")"
+fixture="$(mktemp -d "${TMPDIR:-/tmp}/mihoterm-installer-test.XXXXXXXX")"
 runtime_guard_pid=
 cleanup() {
   if [[ -n "$runtime_guard_pid" ]]; then
@@ -46,7 +46,7 @@ printf '%s\n' yes
 EOF
 chmod 755 "$mock_bin/systemctl" "$mock_bin/loginctl"
 export MIHOTERM_TEST_SERVICE_LOG="$service_log"
-install -m 755 "$project_dir/target/release/mihoterm" "$bundle/mihoterm"
+install -m 755 "${CARGO_TARGET_DIR:-$project_dir/target}/release/mihoterm" "$bundle/mihoterm"
 install -m 755 /bin/true "$bundle/mihomo"
 install -m 755 "$project_dir/packaging/install.sh" "$bundle/install.sh"
 install -m 644 "$project_dir/packaging/shell/mihoterm.sh" "$bundle/shell/mihoterm.sh"

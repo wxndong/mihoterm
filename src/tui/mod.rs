@@ -202,6 +202,21 @@ async fn operation_worker(
 ) {
     while let Some(operation) = operation_receiver.recv().await {
         let result = match operation {
+            Operation::SelectProxyAndReconnect { group, proxy } => {
+                match client.select_proxy_reconnecting(&group, &proxy).await {
+                    Ok(report) => desired
+                        .as_ref()
+                        .map(|store| store.record_selection(&group, &proxy))
+                        .transpose()
+                        .map(|_| OperationSuccess::ProxyReconnected {
+                            group,
+                            proxy,
+                            report,
+                        })
+                        .map_err(OperationError::from),
+                    Err(error) => Err(error.into()),
+                }
+            }
             Operation::SelectProxy { group, proxy } => {
                 match client.select_proxy(&group, &proxy).await {
                     Ok(()) => desired

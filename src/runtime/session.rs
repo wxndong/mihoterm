@@ -150,8 +150,14 @@ impl SessionManager {
             return Err(RuntimeError::SessionAlreadyRunning);
         }
 
-        let mut runtime =
-            ManagedRuntime::start_with_mode(mihomo, profile_path, &self.root, mode).await?;
+        let mut runtime = ManagedRuntime::start_with_mode(
+            mihomo,
+            profile_path,
+            &self.root,
+            mode,
+            &self.state_root.join("endpoint.json"),
+        )
+        .await?;
         let readiness_client = runtime.api_client(Duration::from_millis(500))?;
         runtime
             .wait_ready(&readiness_client, RESTART_READY_TIMEOUT)
@@ -169,7 +175,7 @@ impl SessionManager {
         let supervisor_pid = std::process::id();
         let mut record = StoredSession {
             schema_version: SESSION_SCHEMA_VERSION,
-            session_id: random_hex::<16>()?,
+            session_id: runtime.session_id().to_owned(),
             pid,
             process_start_ticks: process_start_ticks(pid).ok_or(RuntimeError::ProcessStatus)?,
             profile: profile.to_owned(),
@@ -272,7 +278,7 @@ impl SessionManager {
         let start_ticks = process_start_ticks(pid).ok_or(RuntimeError::ProcessStatus)?;
         let _lock = acquire_lock(&self.root)?;
         let current = read_record(&self.root)?.ok_or(RuntimeError::SessionNotRunning)?;
-        if current.session_id != record.session_id {
+        if current.session_id != record.session_id || current.runtime_dir != record.runtime_dir {
             return Err(RuntimeError::InvalidSession);
         }
         record.pid = pid;
@@ -285,7 +291,7 @@ impl SessionManager {
         let Some(current) = read_record(&self.root)? else {
             return Ok(());
         };
-        if current.session_id != record.session_id {
+        if current.session_id != record.session_id || current.runtime_dir != record.runtime_dir {
             return Ok(());
         }
         remove_session_files(&self.root, &current)
@@ -311,7 +317,7 @@ impl SessionManager {
         let Some(current) = read_record(&self.root)? else {
             return Ok(true);
         };
-        if current.session_id == record.session_id {
+        if current.session_id == record.session_id && current.runtime_dir == record.runtime_dir {
             remove_session_files(&self.root, &current)?;
         }
         Ok(true)
@@ -629,6 +635,13 @@ fn recovery_candidates(
     proxies: Option<&ProxiesResponse>,
     original_selection: Option<&str>,
 ) -> Vec<String> {
+    // A selected fallback subtree is the user's recovery boundary. Let Mihomo
+    // fail over inside it; never escape into another region's GLOBAL group.
+    if let (Some(proxies), Some(selected)) = (proxies, original_selection)
+        && selected_fallback(proxies, selected)
+    {
+        return Vec::new();
+    }
     let mut candidates = Vec::new();
     let mut seen = BTreeSet::new();
     if let Some(known_good) = snapshot.known_good.get("GLOBAL") {
@@ -662,6 +675,27 @@ fn recovery_candidates(
     }
     candidates.truncate(MAX_RECOVERY_CANDIDATES);
     candidates
+}
+
+fn selected_fallback(proxies: &ProxiesResponse, selected: &str) -> bool {
+    let mut name = selected;
+    let mut visited = BTreeSet::new();
+    while visited.insert(name) {
+        let Some(info) = proxies.proxies.get(name) else {
+            return false;
+        };
+        if matches!(
+            info.kind.to_ascii_lowercase().as_str(),
+            "fallback" | "urltest"
+        ) {
+            return true;
+        }
+        let Some(next) = info.now.as_deref() else {
+            return false;
+        };
+        name = next;
+    }
+    false
 }
 
 impl ManagedSession {
@@ -1217,6 +1251,30 @@ mod tests {
             recovery_candidates(&snapshot, Some(&proxies), Some("Current")),
             ["Known Good", "Auto", "Fallback", "Extra Fallback"]
         );
+    }
+
+    #[test]
+    fn selected_fallback_boundary_survives_nested_selectors_and_cycles() {
+        let snapshot = DesiredStateSnapshot {
+            active_profile: None,
+            profile_sha256: None,
+            mode: OperatingMode::Global,
+            selections: BTreeMap::new(),
+            known_good: BTreeMap::new(),
+            last_recovery_unix_seconds: None,
+        };
+        let proxies: ProxiesResponse = serde_json::from_value(serde_json::json!({
+            "proxies": {
+                "AI": {"type":"Selector","now":"Allowed"},
+                "Allowed": {"type":"Fallback","all":["A","B"]},
+                "GLOBAL": {"all":["AI","Other"]},
+                "Other": {"type":"Fallback","all":["C"]},
+                "Cycle": {"type":"Selector","now":"Cycle"}
+            }
+        }))
+        .unwrap();
+        assert!(recovery_candidates(&snapshot, Some(&proxies), Some("AI")).is_empty());
+        assert!(!super::selected_fallback(&proxies, "Cycle"));
     }
 
     #[test]

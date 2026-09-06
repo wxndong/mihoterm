@@ -3,9 +3,9 @@ use std::{
     fmt::Write as _,
     fs::{self, File, OpenOptions},
     io,
-    net::TcpListener,
+    net::{Ipv4Addr, SocketAddrV4, TcpListener},
     os::unix::{
-        fs::{OpenOptionsExt, PermissionsExt},
+        fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
         process::CommandExt,
     },
     path::{Component, Path, PathBuf},
@@ -18,6 +18,7 @@ use rustix::{
     process::{Pid, Signal, getppid, kill_process, set_parent_process_death_signal, setsid, umask},
 };
 use secrecy::{ExposeSecret, SecretString};
+use serde::{Deserialize, Serialize};
 
 use crate::mihomo::{ApiClient, OperatingMode};
 
@@ -35,6 +36,7 @@ const BUNDLED_DATA_FILES: [&str; 3] = ["geoip.metadb", "geoip.dat", "geosite.dat
 
 pub(super) struct ManagedRuntime {
     child: Option<Child>,
+    session_id: String,
     restart: Option<RestartContext>,
     runtime_root: PathBuf,
     runtime_dir: PathBuf,
@@ -60,6 +62,7 @@ impl ManagedRuntime {
         profile: &Path,
         runtime_root: &Path,
         mode: OperatingMode,
+        endpoint_path: &Path,
     ) -> Result<Self, RuntimeError> {
         let executable = resolve_executable(mihomo)?;
         let runtime_root = prepare_runtime_root(runtime_root)?;
@@ -71,6 +74,7 @@ impl ManagedRuntime {
             runtime_root.clone(),
             runtime_dir.clone(),
             mode,
+            endpoint_path,
         )
         .await;
         if result.is_err() {
@@ -85,6 +89,7 @@ impl ManagedRuntime {
         runtime_root: PathBuf,
         runtime_dir: PathBuf,
         mode: OperatingMode,
+        endpoint_path: &Path,
     ) -> Result<Self, RuntimeError> {
         let home = runtime_dir.join("home");
         let temporary = runtime_dir.join("tmp");
@@ -92,13 +97,27 @@ impl ManagedRuntime {
         create_private_directory(&temporary)?;
         seed_bundled_data(&executable, &home)?;
 
-        let ports = PortReservations::new()?;
-        let controller_port = ports.controller_port();
-        let mixed_port = ports.mixed_port();
+        let saved = read_endpoint(endpoint_path)?;
+        let ports = match &saved {
+            Some(endpoint) => {
+                PortReservations::bind(endpoint.controller_port, endpoint.mixed_port)?
+            }
+            None => PortReservations::new()?,
+        };
+        let endpoint = saved.unwrap_or(StoredEndpoint {
+            session_id: random_hex::<16>()?,
+            controller_port: ports.controller_port(),
+            mixed_port: ports.mixed_port(),
+            controller_secret: generate_secret()?.expose_secret().to_owned(),
+            proxy_username: format!("mihoterm-{}", random_hex::<8>()?),
+            proxy_password: generate_secret()?.expose_secret().to_owned(),
+        });
+        let controller_port = endpoint.controller_port;
+        let mixed_port = endpoint.mixed_port;
         let controller_url = format!("http://127.0.0.1:{controller_port}");
-        let secret = generate_secret()?;
-        let proxy_username = SecretString::from(format!("mihoterm-{}", random_hex::<8>()?));
-        let proxy_password = generate_secret()?;
+        let secret = SecretString::from(endpoint.controller_secret.clone());
+        let proxy_username = SecretString::from(endpoint.proxy_username.clone());
+        let proxy_password = SecretString::from(endpoint.proxy_password.clone());
         let profile = read_private_profile(profile)?;
         let configuration = build_managed_config(
             &profile,
@@ -125,6 +144,11 @@ impl ManagedRuntime {
         )
         .await?;
 
+        if !endpoint_path.exists() {
+            let contents =
+                serde_json::to_vec(&endpoint).map_err(|_| RuntimeError::PersistentState)?;
+            persist_endpoint(endpoint_path, &contents)?;
+        }
         drop(ports);
         let child = spawn_managed_child(
             &launcher,
@@ -137,6 +161,7 @@ impl ManagedRuntime {
 
         Ok(Self {
             child: Some(child),
+            session_id: endpoint.session_id,
             restart: Some(RestartContext {
                 launcher,
                 executable,
@@ -153,6 +178,10 @@ impl ManagedRuntime {
             proxy_username,
             proxy_password,
         })
+    }
+
+    pub fn session_id(&self) -> &str {
+        &self.session_id
     }
 
     pub fn api_client(&self, timeout: Duration) -> Result<ApiClient, RuntimeError> {
@@ -378,6 +407,75 @@ pub fn detach_supervisor() -> Result<(), RuntimeError> {
         .map_err(|_| RuntimeError::ChildInitialization)
 }
 
+// Deliberately contains no Debug implementation: this is a durable secret.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredEndpoint {
+    session_id: String,
+    controller_port: u16,
+    mixed_port: u16,
+    controller_secret: String,
+    proxy_username: String,
+    proxy_password: String,
+}
+
+fn persist_endpoint(path: &Path, contents: &[u8]) -> Result<(), RuntimeError> {
+    let parent = path.parent().ok_or(RuntimeError::PersistentState)?;
+    let temporary = parent.join(format!(".endpoint-{}.tmp", random_hex::<8>()?));
+    let result = (|| {
+        write_private(&temporary, contents)?;
+        // Publish complete bytes without overwriting an identity won by another starter.
+        fs::hard_link(&temporary, path).map_err(|_| RuntimeError::PersistentState)?;
+        sync_directory(parent)
+    })();
+    let _ = fs::remove_file(&temporary);
+    result
+}
+
+fn read_endpoint(path: &Path) -> Result<Option<StoredEndpoint>, RuntimeError> {
+    use std::io::Read as _;
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(path);
+    let mut file = match file {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(RuntimeError::PersistentState),
+    };
+    let meta = file.metadata().map_err(|_| RuntimeError::PersistentState)?;
+    if !meta.is_file()
+        || meta.permissions().mode() & 0o077 != 0
+        || meta.uid() != rustix::process::getuid().as_raw()
+        || meta.len() > 4096
+    {
+        return Err(RuntimeError::PersistentState);
+    }
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take(4097)
+        .read_to_end(&mut bytes)
+        .map_err(|_| RuntimeError::PersistentState)?;
+    if bytes.len() > 4096 {
+        return Err(RuntimeError::PersistentState);
+    }
+    let e: StoredEndpoint =
+        serde_json::from_slice(&bytes).map_err(|_| RuntimeError::PersistentState)?;
+    let hex = |v: &str, len| v.len() == len && v.bytes().all(|c| c.is_ascii_hexdigit());
+    if e.controller_port == 0
+        || e.mixed_port == 0
+        || e.controller_port == e.mixed_port
+        || !hex(&e.session_id, 32)
+        || !hex(&e.controller_secret, 64)
+        || !hex(&e.proxy_password, 64)
+        || !e.proxy_username.starts_with("mihoterm-")
+        || !hex(&e.proxy_username[9..], 16)
+    {
+        return Err(RuntimeError::PersistentState);
+    }
+    Ok(Some(e))
+}
+
 struct PortReservations {
     controller: TcpListener,
     mixed: TcpListener,
@@ -385,10 +483,24 @@ struct PortReservations {
 
 impl PortReservations {
     fn new() -> Result<Self, RuntimeError> {
-        let controller =
-            TcpListener::bind(("127.0.0.1", 0)).map_err(|_| RuntimeError::PortReservation)?;
-        let mixed =
-            TcpListener::bind(("127.0.0.1", 0)).map_err(|_| RuntimeError::PortReservation)?;
+        Self::bind(0, 0)
+    }
+
+    fn bind(controller_port: u16, mixed_port: u16) -> Result<Self, RuntimeError> {
+        fn listener(port: u16) -> Result<TcpListener, RuntimeError> {
+            let socket = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
+                .map_err(|_| RuntimeError::PortReservation)?;
+            socket
+                .set_reuse_address(true)
+                .map_err(|_| RuntimeError::PortReservation)?;
+            socket
+                .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, port).into())
+                .and_then(|()| socket.listen(128))
+                .map_err(|_| RuntimeError::PortReservation)?;
+            Ok(socket.into())
+        }
+        let controller = listener(controller_port)?;
+        let mixed = listener(mixed_port)?;
         Ok(Self { controller, mixed })
     }
 
@@ -816,6 +928,7 @@ mod tests {
                 .expect("unrelated fixture should start"),
         );
         let mut runtime = ManagedRuntime {
+            session_id: "fixture".into(),
             child: Some(owned),
             restart: None,
             runtime_root: root.clone(),
@@ -858,5 +971,44 @@ mod tests {
             "mihoterm-runtime-test-{}-{nonce}",
             std::process::id()
         ))
+    }
+    #[test]
+    fn durable_endpoint_rejects_public_permissions_and_symlinks() {
+        let base = temporary_directory();
+        fs::create_dir_all(&base).unwrap();
+        let path = base.join("endpoint.json");
+        let endpoint = super::StoredEndpoint {
+            session_id: "a".repeat(32),
+            controller_port: 41001,
+            mixed_port: 41002,
+            controller_secret: "b".repeat(64),
+            proxy_username: format!("mihoterm-{}", "c".repeat(16)),
+            proxy_password: "d".repeat(64),
+        };
+        super::write_private(&path, &serde_json::to_vec(&endpoint).unwrap()).unwrap();
+        assert_eq!(
+            super::read_endpoint(&path).unwrap().unwrap().mixed_port,
+            41002
+        );
+        let link = base.join("linked.json");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(super::read_endpoint(&link).is_err());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(super::read_endpoint(&path).is_err());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn durable_endpoint_port_conflict_never_silently_changes_port() {
+        let ports = super::PortReservations::new().unwrap();
+        assert!(
+            super::PortReservations::bind(ports.controller_port(), ports.mixed_port()).is_err()
+        );
+        let controller = ports.controller_port();
+        let mixed = ports.mixed_port();
+        drop(ports);
+        let reused = super::PortReservations::bind(controller, mixed).unwrap();
+        assert_eq!(reused.controller_port(), controller);
+        assert_eq!(reused.mixed_port(), mixed);
     }
 }
