@@ -19,6 +19,8 @@ import urllib.request
 
 class EchoProxy(socketserver.StreamRequestHandler):
     def handle(self):
+        if getattr(self.server, "reject_new", False):
+            return
         self.connection.settimeout(10)
         line = self.rfile.readline(16384)
         if not line.startswith(b"CONNECT "):
@@ -27,6 +29,13 @@ class EchoProxy(socketserver.StreamRequestHandler):
             pass
         self.wfile.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
         self.wfile.flush()
+        if b"health.test:" in line:
+            self.rfile.readline(16384)
+            while self.rfile.readline(16384) not in (b"\r\n", b"\n", b""):
+                pass
+            self.wfile.write(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+            self.wfile.flush()
+            return
         while True:
             data = self.connection.recv(1024)
             if not data:
@@ -116,7 +125,10 @@ def main():
         "proxies": [{"name": name, "type": "http", "server": "edge.test", "port": server.server_address[1]}
                     for name, server in zip(("A", "B"), servers)],
         "proxy-groups": [{"name": "Target", "type": "select", "proxies": ["A", "B"]},
-                         {"name": "Other", "type": "select", "proxies": ["A"]}],
+                         {"name": "Other", "type": "select", "proxies": ["A"]},
+                         {"name": "Auto", "type": "fallback", "proxies": ["A", "B"],
+                          "url": "http://health.test/", "expected-status": "204",
+                          "interval": 1, "timeout": 500, "lazy": False}],
         "rules": ["DOMAIN,target.test,Target", "MATCH,Other"],
     }
     source = base / "profile.json"
@@ -188,6 +200,31 @@ def main():
         echo(other)
         assert record()["pid"] == initial["pid"]
         results.append("profile hot reload preserves established streams and PID: PASS")
+        run("profile", "add", "fixture-next", "--file", str(source))
+        run("profile", "update", "fixture-next", "--apply")
+        assert record()["profile"] == "fixture-next"
+        echo(new)
+        echo(other)
+        results.append("switch to a different profile preserves established streams: PASS")
+        api("/configs", "PATCH", {"mode": "global"})
+        api("/proxies/GLOBAL", "PUT", {"name": "Auto"})
+        assert api("/proxies/Auto")["now"] == "A", "fixture must start on the node to be failed"
+        continuing = connect("target.test")
+        servers[0].reject_new = True
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if api("/proxies/Auto")["now"] == "B":
+                break
+            time.sleep(.2)
+        else:
+            raise AssertionError("fallback did not select the surviving node")
+        connect("target.test")
+        assert any("Auto" in c["chains"] and "B" in c["chains"]
+                   for c in api("/connections")["connections"])
+        echo(continuing)
+        results.append("node failure switches new requests without closing existing stream: PASS")
+        servers[0].reject_new = False
+        api("/configs", "PATCH", {"mode": "rule"})
         # Crash only this test's exact managed child.
         os.kill(record()["pid"], signal.SIGKILL)
         deadline = time.monotonic() + 25
@@ -203,11 +240,56 @@ def main():
             raise AssertionError("supervised child did not recover")
         keys = ("session_id", "mixed_port", "controller_url", "controller_secret", "proxy_username", "proxy_password")
         assert all(after[k] == initial[k] for k in keys)
+        assert after["profile"] == "fixture-next", "child restart must retain the hot-switched profile"
         connect("target.test", initial)
-        results.append("child crash restores same authenticated endpoint: PASS")
+        results.append("child crash restores the authenticated endpoint and latest profile: PASS")
+        # A brief pause must not trigger restart; the two checks are independent
+        # of network health and its ten-minute cooldown.
+        current = record()
+        os.kill(current["pid"], signal.SIGSTOP)
+        time.sleep(1.2)
+        os.kill(current["pid"], signal.SIGCONT)
+        time.sleep(10)
+        assert record()["pid"] == current["pid"]
+        results.append("brief controller stall does not restart a healthy child: PASS")
+        desired_path = base / "state/desired.json"
+        desired = json.loads(desired_path.read_text())
+        desired["last_recovery_unix_seconds"] = int(time.time())
+        desired_path.write_text(json.dumps(desired))
+        recovery_times = []
+        for _ in range(2):
+            current = record()
+            os.kill(current["pid"], signal.SIGSTOP)
+            started = time.monotonic()
+            deadline = started + 22
+            while time.monotonic() < deadline:
+                time.sleep(.1)
+                try:
+                    after = record()
+                    if after["pid"] != current["pid"] and api("/version"):
+                        break
+                except (OSError, ValueError, urllib.error.URLError):
+                    pass
+            else:
+                raise AssertionError("fast controller watchdog did not recover a hung child")
+            recovery_times.append(round(time.monotonic() - started, 2))
+            assert all(after[k] == initial[k] for k in keys)
+            assert after["profile"] == "fixture-next"
+            connect("target.test", initial)
+        results.append(f"repeated hangs recover during network cooldown: PASS {recovery_times} seconds")
         run("stop")
         assert not (base / "runtime/session.json").exists()
         assert (base / "state/endpoint.json").stat().st_mode & 0o077 == 0
+        endpoint_before = (base / "state/endpoint.json").read_bytes()
+        with socket.socket() as occupied:
+            occupied.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            occupied.bind(("127.0.0.1", initial["mixed_port"]))
+            occupied.listen(1)
+            blocked = run("start", "fixture", "--mihomo", str(args.mihomo.resolve()), check=False)
+            assert blocked.returncode != 0, "occupied endpoint must fail, not choose a new port"
+            assert not (base / "runtime/session.json").exists()
+            assert (base / "state/endpoint.json").read_bytes() == endpoint_before
+        results.append("occupied saved port fails without changing endpoint identity: PASS")
         run("start", "fixture", "--mihomo", str(args.mihomo.resolve()))
         after = record()
         assert all(after[k] == initial[k] for k in keys)

@@ -285,6 +285,11 @@ impl ManagedRuntime {
         remove_runtime_directory(&self.runtime_root, &self.runtime_dir)
     }
 
+    /// Stop only this owned child, retaining its runtime and durable endpoint.
+    pub(super) fn stop_unresponsive_child(&mut self) -> Result<(), RuntimeError> {
+        self.stop_child(false)
+    }
+
     fn try_wait(&mut self) -> Result<Option<ExitStatus>, RuntimeError> {
         let Some(child) = &mut self.child else {
             return Err(RuntimeError::ProcessStatus);

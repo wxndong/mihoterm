@@ -429,7 +429,8 @@ async fn run_session_tui(
     let client = session.api_client(request_timeout)?;
     let display = format!("managed  mixed 127.0.0.1:{}", session.mixed_port());
     let active_profile = session.profile().to_owned();
-    let store = ProfileStore::new(profiles_dir)?;
+    let store =
+        ProfileStore::new(profiles_dir)?.with_download_fallback(session.download_proxy()?)?;
     let profiles = store.list()?;
     let app = App::with_managed_profiles(display, probes, active_profile, profiles);
     let session_manager = SessionManager::with_state(&runtime_dir, &state_dir)?;
@@ -723,7 +724,10 @@ async fn run_profile(
     command: ProfileCommand,
     paths: &AppPaths,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let store = ProfileStore::new(paths.profiles_dir())?;
+    let mut store = ProfileStore::new(paths.profiles_dir())?;
+    if let Ok(Some(session)) = managed_session_manager(paths)?.active() {
+        store = store.with_download_fallback(session.download_proxy()?)?;
+    }
 
     match command {
         ProfileCommand::Add { id, url_file, file } => {
@@ -732,30 +736,29 @@ async fn run_profile(
             store.add(&id, source).await?;
             println!("Added profile {id} from {kind}.");
         }
+        ProfileCommand::Source {
+            id,
+            url_file,
+            file,
+            fallback_group,
+            preferred_proxy,
+            apply,
+        } => {
+            let mut source = profile_source(url_file.as_deref(), file.as_deref())?;
+            if let Some(group) = fallback_group {
+                source = source.with_fallback(group, preferred_proxy)?;
+            }
+            store.replace_source(&id, source).await?;
+            if apply {
+                apply_profile_revision(&store, &id, paths).await?;
+            } else {
+                println!("Replaced source for profile {id}; running session unchanged.");
+            }
+        }
         ProfileCommand::Update { id, apply } => {
             store.update(&id).await?;
             if apply {
-                let profile_path = store.profile_path(&id)?;
-                let manager = managed_session_manager(paths)?;
-                let recovery = match manager
-                    .switch_profile_with_recovery(&id, &profile_path)
-                    .await
-                {
-                    Ok((_, recovery)) => recovery,
-                    Err(error) => {
-                        if store.rollback(&id).is_err() {
-                            return Err(RuntimeError::SessionSwitchRollback.into());
-                        }
-                        return Err(error.into());
-                    }
-                };
-                println!("Updated and applied profile {id} without recreating listeners.");
-                if !matches!(
-                    recovery,
-                    RecoveryOutcome::AlreadyHealthy | RecoveryOutcome::NotApplicable
-                ) {
-                    println!("Post-apply recovery: {}.", recovery_label(recovery));
-                }
+                apply_profile_revision(&store, &id, paths).await?;
             } else {
                 println!("Updated profile {id}.");
             }
@@ -777,6 +780,35 @@ async fn run_profile(
         ProfileCommand::Path { id } => {
             println!("{}", store.profile_path(&id)?.display());
         }
+    }
+    Ok(())
+}
+
+async fn apply_profile_revision(
+    store: &ProfileStore,
+    id: &str,
+    paths: &AppPaths,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let profile_path = store.profile_path(id)?;
+    let manager = managed_session_manager(paths)?;
+    let recovery = match manager
+        .switch_profile_with_recovery(id, &profile_path)
+        .await
+    {
+        Ok((_, recovery)) => recovery,
+        Err(error) => {
+            if store.rollback(id).is_err() {
+                return Err(RuntimeError::SessionSwitchRollback.into());
+            }
+            return Err(error.into());
+        }
+    };
+    println!("Updated and applied profile {id} without recreating listeners.");
+    if !matches!(
+        recovery,
+        RecoveryOutcome::AlreadyHealthy | RecoveryOutcome::NotApplicable
+    ) {
+        println!("Post-apply recovery: {}.", recovery_label(recovery));
     }
     Ok(())
 }

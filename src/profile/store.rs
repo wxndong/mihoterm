@@ -30,6 +30,7 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub struct ProfileStore {
     root: PathBuf,
     client: Client,
+    fallback_client: Option<Client>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,29 +47,39 @@ struct SourceSwap {
 
 impl ProfileStore {
     pub fn new(root: PathBuf) -> Result<Self, ProfileError> {
-        crate::tls::install_default_provider();
-        let client = Client::builder()
-            .no_proxy()
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
-            .redirect(Policy::custom(|attempt| {
-                if attempt.previous().len() >= 5 {
-                    attempt.stop()
-                } else if attempt.url().scheme() == "https" {
-                    attempt.follow()
-                } else {
-                    attempt.stop()
-                }
-            }))
-            .user_agent(SUBSCRIPTION_USER_AGENT)
-            .build()
-            .map_err(|_| ProfileError::DownloadInitialization)?;
-        Ok(Self { root, client })
+        Ok(Self {
+            root,
+            client: subscription_client(None)?,
+            fallback_client: None,
+        })
+    }
+
+    /// Try the verified managed loopback proxy only if the direct HTTPS request fails.
+    pub fn with_download_fallback(mut self, proxy: reqwest::Proxy) -> Result<Self, ProfileError> {
+        self.fallback_client = Some(subscription_client(Some(proxy))?);
+        Ok(self)
+    }
+
+    async fn load_source(&self, source: &ProfileSource) -> Result<Vec<u8>, ProfileError> {
+        match source.load(&self.client).await {
+            Err(ProfileError::DownloadRequest | ProfileError::DownloadStatus(_))
+                if self.fallback_client.is_some() =>
+            {
+                source
+                    .load(
+                        self.fallback_client
+                            .as_ref()
+                            .expect("fallback client checked"),
+                    )
+                    .await
+            }
+            result => result,
+        }
     }
 
     pub async fn add(&self, id: &str, source: ProfileSource) -> Result<(), ProfileError> {
         validate_id(id)?;
-        let contents = source.load(&self.client).await?;
+        let contents = self.load_source(&source).await?;
         validate_profile(&contents)?;
         let _lock = acquire_lock(&self.root)?;
         let directory = self.profile_dir(id);
@@ -99,7 +110,7 @@ impl ProfileStore {
         let _lock = acquire_lock(&self.root)?;
         let directory = self.existing_profile_dir(id)?;
         let source = read_source(&directory)?;
-        let contents = source.load(&self.client).await?;
+        let contents = self.load_source(&source).await?;
         validate_profile(&contents)?;
         replace_with_backup(&directory, &contents)
     }
@@ -107,13 +118,14 @@ impl ProfileStore {
     pub async fn replace_source(
         &self,
         id: &str,
-        source: ProfileSource,
+        mut source: ProfileSource,
     ) -> Result<(), ProfileError> {
         validate_id(id)?;
-        let contents = source.load(&self.client).await?;
-        validate_profile(&contents)?;
         let _lock = acquire_lock(&self.root)?;
         let directory = self.existing_profile_dir(id)?;
+        source.retain_policy_from(&read_source(&directory)?);
+        let contents = self.load_source(&source).await?;
+        validate_profile(&contents)?;
         replace_source_with_backup(&directory, &source, &contents)
     }
 
@@ -190,6 +202,30 @@ impl ProfileStore {
             Err(ProfileError::NotFound)
         }
     }
+}
+
+fn subscription_client(proxy: Option<reqwest::Proxy>) -> Result<Client, ProfileError> {
+    crate::tls::install_default_provider();
+    let mut builder = Client::builder()
+        .no_proxy()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .redirect(Policy::custom(|attempt| {
+            if attempt.previous().len() >= 5 {
+                attempt.stop()
+            } else if attempt.url().scheme() == "https" {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }))
+        .user_agent(SUBSCRIPTION_USER_AGENT);
+    if let Some(proxy) = proxy {
+        builder = builder.proxy(proxy);
+    }
+    builder
+        .build()
+        .map_err(|_| ProfileError::DownloadInitialization)
 }
 
 fn validate_id(id: &str) -> Result<(), ProfileError> {
@@ -577,6 +613,62 @@ mod tests {
             store.profile_path("../escape"),
             Err(ProfileError::InvalidId)
         );
+    }
+
+    #[tokio::test]
+    async fn refresh_and_source_replacement_retain_policy_and_invalid_updates_retain_files() {
+        let base = temporary_directory();
+        fs::create_dir(&base).unwrap();
+        let first = base.join("first.yaml");
+        let second = base.join("second.yaml");
+        let document = |name: &str| {
+            format!(
+                "proxies:\n- {{name: {name}, type: http, server: 127.0.0.1, port: 8080}}\nproxy-groups:\n- {{name: AI, type: select, proxies: [{name}]}}\n"
+            )
+        };
+        fs::write(&first, document("A")).unwrap();
+        let store = ProfileStore::new(base.join("profiles")).unwrap();
+        let source = ProfileSource::from_local_file(&first)
+            .unwrap()
+            .with_fallback("AI".into(), Some("A".into()))
+            .unwrap();
+        store.add("primary", source).await.unwrap();
+        fs::write(&first, document("B")).unwrap();
+        store.update("primary").await.unwrap();
+        let path = store.profile_path("primary").unwrap();
+        let value: yaml_serde::Value = yaml_serde::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["proxy-groups"][1]["proxies"][0].as_str(), Some("B"));
+        fs::write(&second, document("C")).unwrap();
+        store
+            .replace_source("primary", ProfileSource::from_local_file(&second).unwrap())
+            .await
+            .unwrap();
+        let profile = fs::read(&path).unwrap();
+        let value: yaml_serde::Value = yaml_serde::from_slice(&profile).unwrap();
+        assert_eq!(value["proxy-groups"][1]["proxies"][0].as_str(), Some("C"));
+        let descriptor = fs::read(path.parent().unwrap().join("source.toml")).unwrap();
+        fs::write(
+            &second,
+            document("D").replace("name: AI,", "name: Missing,"),
+        )
+        .unwrap();
+        assert_eq!(
+            store.update("primary").await,
+            Err(ProfileError::InvalidFallbackPolicy)
+        );
+        assert_eq!(fs::read(&path).unwrap(), profile);
+        assert_eq!(
+            fs::read(path.parent().unwrap().join("source.toml")).unwrap(),
+            descriptor
+        );
+        store.rollback("primary").unwrap();
+        let value: yaml_serde::Value = yaml_serde::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["proxy-groups"][1]["proxies"][0].as_str(), Some("B"));
+        assert_eq!(
+            store.list().unwrap()[0].source.display,
+            first.to_string_lossy()
+        );
+        fs::remove_dir_all(base).unwrap();
     }
 
     fn fixture(name: &str) -> String {

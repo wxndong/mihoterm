@@ -31,6 +31,24 @@ For a local file:
 $ mihoterm profile add primary --file ./profile.yaml
 ```
 
+An existing profile can be returned to its real subscription source while
+keeping a local AI fallback policy:
+
+```console
+$ mihoterm profile source primary --url-file ~/.config/mihoterm/subscription.url \
+    --fallback-group 'AI' --preferred-proxy 'Proxy A' --apply
+```
+
+This policy is saved beside the source URL. Every refresh rebuilds
+`AI Auto` from the selector's current direct leaf nodes, preferring
+the named node when it still exists. Nested groups and DIRECT/REJECT are not
+expanded into the automatic fallback. The generated group is the selector's
+first option and checks the Codex HTTPS target every 60 seconds, accepting its
+unauthenticated 401/405 responses. A missing selector, no eligible nodes, or a
+conflicting generated group name rejects the update and retains the cached
+profile. Source replacement in the CLI or TUI retains an existing fallback
+policy unless a new one is explicitly supplied.
+
 Profile IDs must match `[A-Za-z0-9][A-Za-z0-9_-]{0,39}`.
 
 ## Operations
@@ -85,7 +103,13 @@ fails visibly instead of racing another update.
 - Subscription URLs must use HTTPS and cannot contain URL credentials or a
   fragment.
 - Redirects are limited and may not downgrade from HTTPS.
-- Environment proxy variables are not used by the profile downloader.
+- Downloads first try direct HTTPS. If that request fails and a verified managed
+  session exists, CLI/TUI updates and automatic network recovery retry once
+  through its authenticated loopback proxy. Environment proxy variables are
+  not used. Initial setup without a managed session still requires direct access.
+- HTTPS certificate and hostname verification remains enabled on both routes.
+  A host with an outdated trust store must supply a valid current CA bundle;
+  bypassing verification is not a supported recovery mechanism.
 - The downloader identifies as `clash.meta` because many subscription
   services use that de facto identifier to return Mihomo-compatible YAML
   instead of an encoded generic URI list.

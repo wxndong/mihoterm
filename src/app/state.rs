@@ -411,6 +411,7 @@ impl App {
                 }) {
                     proxy_state.delay_ms = Some(delay_ms);
                     proxy_state.alive = Some(true);
+                    proxy_state.measured_at = Some(time::OffsetDateTime::now_utc());
                 }
                 self.status = StatusLine {
                     kind: StatusKind::Ready,
@@ -1411,12 +1412,14 @@ mod tests {
                             kind: "Shadowsocks".into(),
                             alive: Some(true),
                             delay_ms: Some(30),
+                            measured_at: Some(time::OffsetDateTime::now_utc()),
                         },
                         ProxyRow {
                             name: "Proxy B".into(),
                             kind: "WireGuard".into(),
                             alive: Some(true),
                             delay_ms: Some(45),
+                            measured_at: Some(time::OffsetDateTime::now_utc()),
                         },
                     ],
                 },
@@ -1644,7 +1647,7 @@ mod tests {
         assert!(matches!(
             action,
             Action::Execute(Operation::Probe { proxy, target })
-                if proxy == "Proxy B" && target.name() == "OpenAI / Codex"
+                if proxy == "Proxy B" && target.name() == "OpenAI API"
         ));
     }
 

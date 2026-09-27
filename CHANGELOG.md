@@ -7,6 +7,35 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0-alpha.6] - 2026-09-27
+
+### Added
+
+- Explicit reconnection of only the selected policy group's matching connections.
+- Persistent subscription fallback policy and a protected-file `profile source`
+  command for changing the source without replacing a live proxy endpoint.
+
+### Fixed
+
+- Preserve saved proxy ports and credentials across supervised recovery and
+  explicit stop/start; report occupied endpoints instead of silently moving them.
+- Enable concurrent node dialing and profile-derived TCP DNS alternatives in
+  managed configurations when the subscription has not specified them.
+- Check the local controller every five seconds and recover after two failed
+  one-second probes, independently of the external-network recovery cooldown.
+- Refresh real HTTPS subscriptions through the authenticated managed proxy when
+  direct download fails, retaining TLS verification and cached working profiles.
+- Persist an optional AI fallback policy with the subscription source and
+  regenerate its direct leaf-node membership on every refresh.
+- Retain the latest hot-switched profile identity when a supervised child
+  restarts, instead of overwriting it with the supervisor's startup profile.
+- Separate Codex's ChatGPT route from OpenAI API health checks; retain legacy
+  probe aliases and recognize the Codex endpoint's HEAD 405 response.
+- Display expired, missing, and failed probe evidence explicitly instead of
+  presenting a stale failure as current node health or zero-millisecond latency.
+- Update rustls and the transitive LRU cache dependency to address
+  RUSTSEC-2026-0285 and RUSTSEC-2026-0253.
+
 ## [0.1.0-alpha.5] - 2026-08-28
 
 ### Added
@@ -155,7 +184,8 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Request Mihomo-compatible YAML from subscription services that select their
   response format from the client identifier.
 
-[Unreleased]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.5...HEAD
+[Unreleased]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.6...HEAD
+[0.1.0-alpha.6]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.5...v0.1.0-alpha.6
 [0.1.0-alpha.5]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.4...v0.1.0-alpha.5
 [0.1.0-alpha.4]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.3...v0.1.0-alpha.4
 [0.1.0-alpha.3]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.2...v0.1.0-alpha.3

@@ -3,9 +3,12 @@
 A tiny, fast, keyboard-first TUI for [Mihomo](https://github.com/MetaCubeX/mihomo)
 on Linux.
 
-> **Status:** v0.1.0-alpha.5 is the current prerelease. Managed mode,
+> **Status:** v0.1.0-alpha.6 is the current prerelease. Managed mode,
 > user-local installation, and portable packaging are validated locally before
 > each release.
+
+See [reconnection and safe upgrades](docs/reconnect-update.md) for alpha.6
+recovery behavior and staging an upgrade while tasks are active.
 
 MihoTerm is an independent client for the Mihomo external-controller API. It
 does not provide proxy services, subscription content, or credentials.
@@ -29,7 +32,7 @@ network.
   latest recorded delay.
 - Inspect live connections and real-time throughput in a read-only table.
 - Select proxies and modes through an explicit confirmation step; optionally reconnect only the selected group's existing connections.
-- Probe Google, OpenAI, or GitHub without changing the active proxy.
+- Probe Google, OpenAI API, Codex, or GitHub without changing the active proxy.
 - Load additional HTTPS probe targets from a protected TOML configuration.
 - Import Mihomo YAML from a protected subscription URL file or local file.
 - Add, inspect in redacted form, replace, validate, update, and roll back named
@@ -38,7 +41,9 @@ network.
   bounded post-reload recovery, and immediate dashboard refresh.
 - Keep one authenticated, user-owned Mihomo process running independently of
   the TUI, with private runtime files, random loopback ports, exact-PID
-  lifecycle control, bounded crash restart, and listener-preserving recovery.
+  lifecycle control, bounded crash/hang recovery, and saved endpoint credentials.
+- Refresh HTTPS subscriptions through the managed proxy after direct failure,
+  retaining TLS verification and an optional subscription-scoped fallback policy.
 - Persist the active profile, mode, and selector choices; diagnose configuration
   drift, Codex reachability, and inherited session markers with
   `mihoterm doctor`, or run the bounded repair path with `doctor --repair`.

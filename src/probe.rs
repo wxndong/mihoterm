@@ -53,7 +53,12 @@ impl ProbeTarget {
     pub fn built_in() -> Vec<Self> {
         [
             ("Google", "https://www.gstatic.com/generate_204", "204"),
-            ("OpenAI / Codex", "https://api.openai.com/v1/models", "401"),
+            ("OpenAI API", "https://api.openai.com/v1/models", "401"),
+            (
+                "Codex",
+                "https://chatgpt.com/backend-api/codex/models",
+                "401/405",
+            ),
             ("GitHub", "https://github.com/robots.txt", "200"),
         ]
         .into_iter()
@@ -130,7 +135,8 @@ pub fn select_probe_targets(
 
 fn built_in_alias(selector: &str) -> Option<&'static str> {
     match selector.trim().to_ascii_lowercase().as_str() {
-        "openai" | "codex" | "openai/codex" => Some("OpenAI / Codex"),
+        "openai" => Some("OpenAI API"),
+        "codex" | "openai/codex" | "openai / codex" => Some("Codex"),
         _ => None,
     }
 }
@@ -193,10 +199,12 @@ mod tests {
     fn built_in_targets_have_distinct_expected_statuses() {
         let targets = ProbeTarget::built_in();
 
-        assert_eq!(targets.len(), 3);
+        assert_eq!(targets.len(), 4);
         assert_eq!(targets[0].expected(), "204");
         assert_eq!(targets[1].expected(), "401");
-        assert_eq!(targets[2].expected(), "200");
+        assert_eq!(targets[2].expected(), "401/405");
+        assert_eq!(targets[2].url().host_str(), Some("chatgpt.com"));
+        assert_eq!(targets[3].expected(), "200");
     }
 
     #[test]
@@ -241,8 +249,18 @@ mod tests {
 
         assert_eq!(
             selected.iter().map(ProbeTarget::name).collect::<Vec<_>>(),
-            ["GitHub", "OpenAI / Codex"]
+            ["GitHub", "OpenAI API"]
         );
+    }
+
+    #[test]
+    fn codex_alias_checks_chatgpt_instead_of_openai_api() {
+        let targets = ProbeTarget::built_in();
+        for alias in ["codex", "OpenAI / Codex", "openai/codex"] {
+            let selected = select_probe_targets(&targets, &[alias.into()]).unwrap();
+            assert_eq!(selected[0].url().host_str(), Some("chatgpt.com"));
+            assert_eq!(selected[0].expected(), "401/405");
+        }
     }
 
     #[test]

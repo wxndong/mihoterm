@@ -146,7 +146,8 @@ cat >"$bundle_dir/CORE-METADATA.txt" <<EOF
 Program: Mihomo
 Version: $mihomo_version
 Upstream asset: $mihomo_asset
-Upstream binary SHA-256: $mihomo_sha256
+Upstream archive SHA-256: $mihomo_sha256
+Bundled executable SHA-256: $(sha256sum "$bundle_dir/mihomo" | awk '{ print $1 }')
 Source commit: $source_commit
 Release: https://github.com/MetaCubeX/mihomo/releases/tag/$mihomo_version
 Source: https://github.com/MetaCubeX/mihomo/tree/$mihomo_version
