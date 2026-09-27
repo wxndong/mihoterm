@@ -260,7 +260,8 @@ async fn probe_request_preserves_target_and_expected_status() {
 async fn probe_command_reports_every_target_and_fails_after_partial_reachability() {
     let (controller, requests) = spawn_scripted_json_server(vec![
         ("generate_204", "200 OK", r#"{"delay":21,"meanDelay":22}"#),
-        ("api.openai.com", "504 Gateway Timeout", ""),
+        ("api.openai.com", "200 OK", r#"{"delay":25}"#),
+        ("chatgpt.com", "504 Gateway Timeout", ""),
         ("github.com", "200 OK", r#"{"delay":33}"#),
     ])
     .await;
@@ -293,17 +294,18 @@ async fn probe_command_reports_every_target_and_fails_after_partial_reachability
         String::from_utf8(output.stdout).expect("stdout should be UTF-8"),
         concat!(
             "Google: Proxy A responded in 21 ms\n",
-            "OpenAI / Codex: Proxy A failed: probe proxy returned HTTP 504\n",
+            "OpenAI API: Proxy A responded in 25 ms\n",
+            "Codex: Proxy A failed: probe proxy returned HTTP 504\n",
             "GitHub: Proxy A responded in 33 ms\n"
         )
     );
     assert_eq!(
         String::from_utf8(output.stderr).expect("stderr should be UTF-8"),
-        "mihoterm: 1 of 3 probes failed\n"
+        "mihoterm: 1 of 4 probes failed\n"
     );
 
     let requests = requests.await.expect("mock should capture all requests");
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 4);
     assert!(
         requests
             .iter()

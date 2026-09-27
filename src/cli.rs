@@ -231,6 +231,29 @@ pub enum ProfileCommand {
         file: Option<PathBuf>,
     },
 
+    /// Replace a stored source while retaining its fallback policy.
+    Source {
+        id: String,
+        #[arg(
+            long,
+            value_name = "PATH",
+            required_unless_present = "file",
+            conflicts_with = "file"
+        )]
+        url_file: Option<PathBuf>,
+        #[arg(long, value_name = "PATH")]
+        file: Option<PathBuf>,
+        /// Generate an AI fallback from this selector's direct leaf nodes on each refresh.
+        #[arg(long, value_name = "GROUP")]
+        fallback_group: Option<String>,
+        /// Prefer this node when it remains in the refreshed subscription.
+        #[arg(long, value_name = "NAME", requires = "fallback_group")]
+        preferred_proxy: Option<String>,
+        /// Apply the validated source and policy without recreating listeners.
+        #[arg(long)]
+        apply: bool,
+    },
+
     /// Refresh a profile from its stored source.
     Update {
         /// Stable profile identifier.

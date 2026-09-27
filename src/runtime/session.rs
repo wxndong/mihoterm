@@ -48,6 +48,9 @@ const HEALTHY_UPTIME: Duration = Duration::from_secs(60);
 const MAX_CONSECUTIVE_RESTARTS: usize = 6;
 const RESTART_BACKOFF_SECONDS: [u64; MAX_CONSECUTIVE_RESTARTS] = [1, 2, 4, 8, 16, 30];
 const HEALTH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const CONTROLLER_INTERVAL: Duration = Duration::from_secs(5);
+const CONTROLLER_TIMEOUT: Duration = Duration::from_secs(1);
+const CONTROLLER_FAILURE_LIMIT: u8 = 2;
 const HEALTH_RECHECK_DELAY: Duration = Duration::from_secs(15);
 const RECOVERY_COOLDOWN_SECONDS: u64 = 10 * 60;
 const MAX_RECOVERY_CANDIDATES: usize = 4;
@@ -217,18 +220,55 @@ impl SessionManager {
         let mut started_at = Instant::now();
         let mut consecutive_restarts = 0;
         let health_monitor = tokio::spawn(self.clone().health_loop());
+        let controller = runtime.api_client(CONTROLLER_TIMEOUT)?;
+        let mut controller_interval = tokio::time::interval_at(
+            tokio::time::Instant::now() + CONTROLLER_INTERVAL,
+            CONTROLLER_INTERVAL,
+        );
+        controller_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut controller_failures = 0_u8;
 
         let result = async {
             loop {
-                let status = tokio::select! {
+                let exit_code = tokio::select! {
                     _ = interrupt.recv() => return Ok(()),
                     _ = terminate.recv() => return Ok(()),
-                    status = runtime.wait() => status?,
+                    status = runtime.wait() => status?.code(),
+                    _ = controller_interval.tick() => {
+                        // Do not race a profile reload or a foreground stop. This
+                        // local check is independent of external-probe cooldowns.
+                        let _lock = match try_acquire_lock(&self.root) {
+                            Ok(lock) => lock,
+                            Err(RuntimeError::SessionBusy) => {
+                                controller_failures = 0;
+                                continue;
+                            }
+                            Err(error) => return Err(error),
+                        };
+                        let current = read_record(&self.root)?
+                            .ok_or(RuntimeError::SessionNotRunning)?;
+                        if current.session_id != record.session_id
+                            || current.runtime_dir != record.runtime_dir
+                            || Some(current.pid) != runtime.child_id()
+                        {
+                            return Err(RuntimeError::InvalidSession);
+                        }
+                        if controller.version().await.is_ok() {
+                            controller_failures = 0;
+                            continue;
+                        }
+                        controller_failures += 1;
+                        if controller_failures < CONTROLLER_FAILURE_LIMIT {
+                            continue;
+                        }
+                        eprintln!("mihoterm: local controller unresponsive twice; restarting child {}", current.pid);
+                        runtime.stop_unresponsive_child()?;
+                        None
+                    }
                 };
                 if started_at.elapsed() >= HEALTHY_UPTIME {
                     consecutive_restarts = 0;
                 }
-                let exit_code = status.code();
 
                 loop {
                     if consecutive_restarts >= MAX_CONSECUTIVE_RESTARTS {
@@ -246,6 +286,9 @@ impl SessionManager {
                         self.restore_runtime_selections(runtime).await?;
                         self.update_child_record(record, runtime)?;
                         started_at = Instant::now();
+                        controller_failures = 0;
+                        controller_interval.reset();
+                        eprintln!("mihoterm: managed child recovered on the saved endpoint");
                         break;
                     }
                 }
@@ -277,13 +320,17 @@ impl SessionManager {
         let pid = runtime.child_id().ok_or(RuntimeError::ProcessStatus)?;
         let start_ticks = process_start_ticks(pid).ok_or(RuntimeError::ProcessStatus)?;
         let _lock = acquire_lock(&self.root)?;
-        let current = read_record(&self.root)?.ok_or(RuntimeError::SessionNotRunning)?;
+        let mut current = read_record(&self.root)?.ok_or(RuntimeError::SessionNotRunning)?;
         if current.session_id != record.session_id || current.runtime_dir != record.runtime_dir {
             return Err(RuntimeError::InvalidSession);
         }
-        record.pid = pid;
-        record.process_start_ticks = start_ticks;
-        write_record(&self.root, record)
+        // A foreground hot switch can update the stored profile while this
+        // supervisor still holds its startup record. Preserve the latest state.
+        current.pid = pid;
+        current.process_start_ticks = start_ticks;
+        write_record(&self.root, &current)?;
+        *record = current;
+        Ok(())
     }
 
     fn remove_owned_session(&self, record: &StoredSession) -> Result<(), RuntimeError> {
@@ -418,6 +465,13 @@ impl SessionManager {
     ) -> Result<RecoveryOutcome, RuntimeError> {
         let profile = session.profile().to_owned();
         let store = ProfileStore::new(self.state_root.join("profiles"))
+            .and_then(|store| {
+                store.with_download_fallback(
+                    session
+                        .download_proxy()
+                        .map_err(|_| crate::profile::ProfileError::DownloadInitialization)?,
+                )
+            })
             .map_err(|_| RuntimeError::PersistentState)?;
         let mut applied_refresh = false;
 
@@ -699,6 +753,12 @@ fn selected_fallback(proxies: &ProxiesResponse, selected: &str) -> bool {
 }
 
 impl ManagedSession {
+    pub fn download_proxy(&self) -> Result<reqwest::Proxy, RuntimeError> {
+        reqwest::Proxy::https(format!("http://127.0.0.1:{}", self.record.mixed_port))
+            .map(|proxy| proxy.basic_auth(&self.record.proxy_username, &self.record.proxy_password))
+            .map_err(|_| RuntimeError::ApiInitialization)
+    }
+
     pub fn api_client(&self, timeout: Duration) -> Result<ApiClient, RuntimeError> {
         ApiClient::with_timeout(
             &self.record.controller_url,
@@ -1093,7 +1153,7 @@ async fn observe_session_health(session: &ManagedSession) -> HealthObservation {
         let client = client.clone();
         let group_name = group_name.clone();
         async move {
-            let codex = target.name() == "OpenAI / Codex";
+            let codex = target.name() == "Codex";
             let success = client.probe_delay(&group_name, &target).await.is_ok();
             (codex, success)
         }

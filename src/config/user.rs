@@ -191,8 +191,8 @@ mod tests {
         let targets = load_probe_targets(&path, true).expect("configuration should load");
         fs::remove_file(path).expect("fixture should be removed");
 
-        assert_eq!(targets.len(), 4);
-        assert_eq!(targets[3].name(), "Example");
+        assert_eq!(targets.len(), 5);
+        assert_eq!(targets[4].name(), "Example");
     }
 
     #[test]

@@ -228,15 +228,8 @@ fn render_proxies(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     } else {
                         " "
                     };
-                    let health = match proxy.alive {
-                        Some(true) => "+",
-                        Some(false) => "x",
-                        None => "?",
-                    };
-                    let delay = proxy
-                        .delay_ms
-                        .map_or_else(|| "--".into(), |delay| format!("{delay} ms"));
-                    ListItem::new(format!("{current} {health}  {}  [{delay}]", proxy.name))
+                    let probe = proxy.probe_label(time::OffsetDateTime::now_utc());
+                    ListItem::new(format!("{current} {}  [{probe}]", proxy.name))
                 })
                 .collect::<Vec<_>>()
         })
@@ -565,6 +558,7 @@ mod tests {
                     kind: "Shadowsocks".into(),
                     alive: Some(true),
                     delay_ms: Some(31),
+                    measured_at: Some(time::OffsetDateTime::now_utc()),
                 }],
             }],
             connections: Vec::new(),
@@ -643,6 +637,7 @@ mod tests {
                     kind: "Shadowsocks".into(),
                     alive: Some(true),
                     delay_ms: Some(31),
+                    measured_at: Some(time::OffsetDateTime::now_utc()),
                 }],
             }],
             connections: Vec::new(),

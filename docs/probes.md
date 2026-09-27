@@ -9,13 +9,19 @@ authenticated application workflow will succeed.
 | Name | URL | Expected status |
 | --- | --- | --- |
 | Google | `https://www.gstatic.com/generate_204` | `204` |
-| OpenAI / Codex | `https://api.openai.com/v1/models` | `401` |
+| OpenAI API | `https://api.openai.com/v1/models` | `401` |
+| Codex | `https://chatgpt.com/backend-api/codex/models` | `401/405` |
 | GitHub | `https://github.com/robots.txt` | `200` |
 
 The OpenAI endpoint intentionally receives no API credential. An expected
 `401` confirms that the OpenAI API route, TLS connection, and HTTP service are
 reachable; it does not validate a Codex login, account entitlement, or model
 request.
+
+The Codex probe checks the ChatGPT route separately. Mihomo sends HEAD, for
+which that endpoint may respond with 405. Neither expected response proves
+login, entitlement or successful streaming. An OpenAI API success cannot
+substitute for a failed Codex probe.
 
 Mihomo performs the request through its
 [`/proxies/:name/delay`](https://wiki.metacubex.one/en/api/#proxies) endpoint.
@@ -25,9 +31,13 @@ MihoTerm passes an explicit URL, timeout, and expected HTTP status.
 
 - `p` selects the next target.
 - `d` probes the highlighted proxy.
-- Results remain separate per target; MihoTerm does not combine unrelated
-  services into a single score.
+- The operation status names the measured target. The proxy row shows Mihomo's
+  latest generic probe history, which does not identify its target; it is not
+  a combined score or a claim that all services work.
 - Probes are user-triggered and are not repeated automatically.
+- Rows label the last probe rather than declaring a node online/offline.
+  Results older than five minutes are stale; missing or future timestamps
+  are unknown. A zero-delay failure is displayed as a failed probe.
 
 ## Command-line interaction
 
@@ -37,8 +47,9 @@ Run all configured targets through one explicitly named proxy or policy group:
 $ mihoterm probe --proxy "Proxy A"
 ```
 
-Repeat `--target` to run a subset. Names are case-insensitive, and `openai` or
-`codex` is an alias for `OpenAI / Codex`:
+Repeat `--target` to run a subset. Names are case-insensitive. `openai` selects
+OpenAI API; `codex` selects Codex. The legacy `OpenAI / Codex` and
+`openai/codex` aliases select the Codex route:
 
 ```console
 $ mihoterm probe --proxy "Proxy A" --target Google --target openai

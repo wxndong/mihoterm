@@ -29,6 +29,13 @@ not already exist. A subsequent command reuses the same verified session. If
 Mihomo exits unexpectedly, the supervisor restarts the exact child with bounded
 backoff while preserving the session identifier, proxy listener, credentials,
 and runtime configuration.
+The supervisor also probes its local controller every five seconds with a
+one-second deadline. Two consecutive failures trigger recovery of that exact
+owned child. This does not depend on outside websites or the ten-minute network
+recovery cooldown; brief controller pauses and concurrent profile reloads do not
+count as two failures. The existing bounded restart backoff still applies.
+After a hot profile switch, child recovery retains the latest stored profile
+identity as well as the runtime configuration.
 The managed TUI can switch to another stored profile through a confirmed,
 transactional hot reload. It preserves the loopback ports and credentials,
 updates the private session descriptor only after Mihomo accepts the new
@@ -191,8 +198,9 @@ owner.
 ## Health and recovery
 
 The supervisor performs low-frequency health checks only in Global mode. A
-healthy result requires the OpenAI/Codex probe and at least one of the Google
-or GitHub probes. Two failed observations are required before automatic
+healthy result requires the ChatGPT Codex probe and at least one other built-in
+probe (Google, GitHub, or OpenAI API). This is reachability, not authenticated
+model-stream validation. Two failed observations are required before automatic
 recovery. Recovery has a durable ten-minute cooldown and is limited to:
 
 1. restarting an unresponsive exact child;

@@ -28,6 +28,30 @@ pub struct ProxyRow {
     pub kind: String,
     pub alive: Option<bool>,
     pub delay_ms: Option<u32>,
+    /// Timestamp of the last probe, not of the controller snapshot.
+    pub measured_at: Option<time::OffsetDateTime>,
+}
+
+impl ProxyRow {
+    /// A probe result is evidence about a past request, never overall connectivity.
+    #[must_use]
+    pub fn probe_label(&self, now: time::OffsetDateTime) -> String {
+        let Some(at) = self.measured_at else {
+            return "未检测 / unknown".into();
+        };
+        let age = (now - at).whole_seconds();
+        if age < 0 {
+            return "时间异常 / unknown".into();
+        }
+        if age > 300 {
+            return format!("检测已过期 / stale {}m", age / 60);
+        }
+        match (self.alive, self.delay_ms) {
+            (Some(false), _) | (_, Some(0)) => format!("上次检测失败 / failed {age}s ago"),
+            (Some(true), Some(delay)) => format!("上次检测 {delay} ms, {age}s ago"),
+            _ => "未检测 / unknown".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +93,15 @@ impl Snapshot {
                             kind: member.map_or_else(String::new, |proxy| proxy.kind.clone()),
                             alive: member.and_then(|proxy| proxy.alive),
                             delay_ms: member.and_then(|proxy| proxy.latest_delay_ms()),
+                            measured_at: member.and_then(|proxy| proxy.history.last()).and_then(
+                                |sample| {
+                                    time::OffsetDateTime::parse(
+                                        &sample.time,
+                                        &time::format_description::well_known::Rfc3339,
+                                    )
+                                    .ok()
+                                },
+                            ),
                         }
                     })
                     .collect();
@@ -188,6 +221,26 @@ mod tests {
     use crate::mihomo::{Connection, ConnectionMetadata, ConnectionsResponse};
 
     use super::{combined_rule, connection_host, connection_rows, rate_per_sec};
+
+    #[test]
+    fn old_failed_probe_cannot_masquerade_as_current_outage() {
+        let now = time::OffsetDateTime::from_unix_timestamp(1_790_000_000).unwrap();
+        let mut row = super::ProxyRow {
+            name: "Research + AI".into(),
+            kind: "Selector".into(),
+            alive: Some(false),
+            delay_ms: Some(0),
+            measured_at: Some(now - time::Duration::days(2)),
+        };
+        assert!(row.probe_label(now).contains("stale"));
+        assert!(!row.probe_label(now).contains("0 ms"));
+        row.measured_at = Some(now - time::Duration::seconds(2));
+        assert!(row.probe_label(now).contains("failed"));
+        row.measured_at = None;
+        assert!(row.probe_label(now).contains("unknown"));
+        row.measured_at = Some(now + time::Duration::seconds(1));
+        assert!(row.probe_label(now).contains("unknown"));
+    }
 
     #[test]
     fn rate_uses_elapsed_time_and_saturates_on_reset() {

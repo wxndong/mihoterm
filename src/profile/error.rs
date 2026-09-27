@@ -70,4 +70,9 @@ pub enum ProfileError {
 
     #[error("the stored profile source descriptor is invalid")]
     InvalidSourceDescriptor,
+
+    #[error(
+        "fallback policy needs a valid selector with direct proxy members and an unused generated group name"
+    )]
+    InvalidFallbackPolicy,
 }

@@ -10,7 +10,7 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use super::ProfileError;
+use super::{ProfileError, policy::FallbackPolicy};
 
 pub(crate) const MAX_PROFILE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_URL_FILE_BYTES: u64 = 16 * 1024;
@@ -19,6 +19,8 @@ const MAX_URL_FILE_BYTES: u64 = 16 * 1024;
 #[serde(deny_unknown_fields)]
 pub struct ProfileSource {
     source: SourceKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fallback: Option<FallbackPolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +62,7 @@ impl ProfileSource {
             source: SourceKind::Https {
                 url: url.to_string(),
             },
+            fallback: None,
         })
     }
 
@@ -75,7 +78,28 @@ impl ProfileSource {
 
         Ok(Self {
             source: SourceKind::LocalFile { path },
+            fallback: None,
         })
+    }
+
+    pub fn with_fallback(
+        mut self,
+        group: String,
+        preferred_proxy: Option<String>,
+    ) -> Result<Self, ProfileError> {
+        let policy = FallbackPolicy {
+            group,
+            preferred_proxy,
+        };
+        policy.validate()?;
+        self.fallback = Some(policy);
+        Ok(self)
+    }
+
+    pub(super) fn retain_policy_from(&mut self, previous: &Self) {
+        if self.fallback.is_none() {
+            self.fallback.clone_from(&previous.fallback);
+        }
     }
 
     #[must_use]
@@ -114,13 +138,20 @@ impl ProfileSource {
     }
 
     pub(crate) async fn load(&self, client: &Client) -> Result<Vec<u8>, ProfileError> {
-        match &self.source {
+        let contents = match &self.source {
             SourceKind::Https { url } => load_https(client, url).await,
             SourceKind::LocalFile { path } => load_local(path),
+        }?;
+        match &self.fallback {
+            Some(policy) => policy.apply(&contents),
+            None => Ok(contents),
         }
     }
 
     fn revalidate(&self) -> Result<(), ProfileError> {
+        if let Some(policy) = &self.fallback {
+            policy.validate()?;
+        }
         match &self.source {
             SourceKind::Https { url } => {
                 validate_subscription_url(url)?;
