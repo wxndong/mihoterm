@@ -33,6 +33,8 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   probe aliases and recognize the Codex endpoint's HEAD 405 response.
 - Display expired, missing, and failed probe evidence explicitly instead of
   presenting a stale failure as current node health or zero-millisecond latency.
+- Update rustls and the transitive LRU cache dependency to address
+  RUSTSEC-2026-0285 and RUSTSEC-2026-0253.
 
 ## [0.1.0-alpha.5] - 2026-08-28
 
