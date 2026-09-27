@@ -3,7 +3,7 @@
 A tiny, fast, keyboard-first TUI for [Mihomo](https://github.com/MetaCubeX/mihomo)
 on Linux.
 
-> **Status:** v0.1.0-alpha.6 is the current prerelease. Managed mode,
+> **Status:** v0.1.0-alpha.6 is the current release, marked Latest on GitHub. Managed mode,
 > user-local installation, and portable packaging are validated locally before
 > each release.
 
