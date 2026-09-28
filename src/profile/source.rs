@@ -96,10 +96,16 @@ impl ProfileSource {
         Ok(self)
     }
 
-    pub(super) fn retain_policy_from(&mut self, previous: &Self) {
-        if self.fallback.is_none() {
+    pub(super) fn retain_policy_from(&mut self, previous: &Self) -> bool {
+        if self.fallback.is_none() && previous.fallback.is_some() {
             self.fallback.clone_from(&previous.fallback);
+            return true;
         }
+        false
+    }
+
+    pub(super) fn clear_fallback(&mut self) {
+        self.fallback = None;
     }
 
     #[must_use]
@@ -137,14 +143,17 @@ impl ProfileSource {
         Ok(source)
     }
 
-    pub(crate) async fn load(&self, client: &Client) -> Result<Vec<u8>, ProfileError> {
-        let contents = match &self.source {
+    pub(super) async fn load_raw(&self, client: &Client) -> Result<Vec<u8>, ProfileError> {
+        match &self.source {
             SourceKind::Https { url } => load_https(client, url).await,
             SourceKind::LocalFile { path } => load_local(path),
-        }?;
+        }
+    }
+
+    pub(super) fn apply_fallback(&self, contents: &[u8]) -> Result<Vec<u8>, ProfileError> {
         match &self.fallback {
-            Some(policy) => policy.apply(&contents),
-            None => Ok(contents),
+            Some(policy) => policy.apply(contents),
+            None => Ok(contents.to_vec()),
         }
     }
 

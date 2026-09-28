@@ -278,16 +278,19 @@ async fn profile_worker(
             },
             ProfileOperation::ReplaceSource { id, source } => {
                 match store.replace_source(&id, source).await {
-                    Ok(()) => match apply_revision_if_active(&store, &session_manager, &id).await {
-                        Ok(()) => store
-                            .list()
-                            .map(|profiles| ProfileOperationSuccess::SourceReplaced {
-                                id,
-                                profiles,
-                            })
-                            .map_err(ProfileOperationError::from),
-                        Err(error) => Err(error),
-                    },
+                    Ok(replacement) => {
+                        match apply_revision_if_active(&store, &session_manager, &id).await {
+                            Ok(()) => store
+                                .list()
+                                .map(|profiles| ProfileOperationSuccess::SourceReplaced {
+                                    id,
+                                    profiles,
+                                    replacement,
+                                })
+                                .map_err(ProfileOperationError::from),
+                            Err(error) => Err(error),
+                        }
+                    }
                     Err(error) => Err(error.into()),
                 }
             }

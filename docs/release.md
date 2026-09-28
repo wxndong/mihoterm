@@ -27,6 +27,8 @@ Planned first-release gates:
   listener-preserving profile repair, and deferred runtime restart upgrades;
 - `v0.1.0-alpha.6`: fast local hang recovery, stable endpoint credentials,
   subscription refresh with persistent fallback policy, and separate Codex probes;
+- `v0.1.0-alpha.7`: subscription replacement across different policy groups,
+  with explicit compatibility notices and live-application rollback;
 - `v0.1.0-beta.1`: validated aarch64 and armv7 bundles plus compatibility
   review;
 - `v0.1.0-rc.1`: security audit, compatibility review, and release automation;

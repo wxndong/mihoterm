@@ -124,4 +124,7 @@ Run the HTTPS subscription gate against the same extracted release binary:
 This gate needs Python 3 and OpenSSL. Its local CA, HTTPS server and authenticated
 Mihomo instance are private fixtures. It verifies direct-download failure,
 managed-proxy fallback, changed remote nodes, retained live streams, rejected
-malformed updates, and rejected untrusted TLS certificates.
+malformed updates, and rejected untrusted TLS certificates. It also checks
+replacement by a subscription with different groups, one successful document
+download, removal of an incompatible inherited policy, strict explicit-policy
+validation, and restoration of the old source/policy after core rejection.

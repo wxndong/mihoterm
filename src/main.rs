@@ -748,11 +748,14 @@ async fn run_profile(
             if let Some(group) = fallback_group {
                 source = source.with_fallback(group, preferred_proxy)?;
             }
-            store.replace_source(&id, source).await?;
+            let replacement = store.replace_source(&id, source).await?;
             if apply {
                 apply_profile_revision(&store, &id, paths).await?;
             } else {
                 println!("Replaced source for profile {id}; running session unchanged.");
+            }
+            if let Some(notice) = replacement.notice() {
+                println!("{notice}");
             }
         }
         ProfileCommand::Update { id, apply } => {

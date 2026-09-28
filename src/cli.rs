@@ -231,7 +231,7 @@ pub enum ProfileCommand {
         file: Option<PathBuf>,
     },
 
-    /// Replace a stored source while retaining its fallback policy.
+    /// Replace a source, retaining its custom fallback only when compatible.
     Source {
         id: String,
         #[arg(

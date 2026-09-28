@@ -137,6 +137,7 @@ pub enum ProfileOperationSuccess {
     SourceReplaced {
         id: String,
         profiles: Vec<ProfileSummary>,
+        replacement: crate::profile::SourceReplacement,
     },
     Updated {
         id: String,
@@ -295,11 +296,20 @@ impl App {
                     message: format!("Added {id}; restart with that profile to use it"),
                 };
             }
-            Ok(ProfileOperationSuccess::SourceReplaced { id, profiles }) => {
+            Ok(ProfileOperationSuccess::SourceReplaced {
+                id,
+                profiles,
+                replacement,
+            }) => {
                 self.replace_profiles(profiles, &id);
+                let mut message = self.profile_change_message("Replaced source for", &id);
+                if let Some(notice) = replacement.notice() {
+                    message.push_str("; ");
+                    message.push_str(notice);
+                }
                 self.status = StatusLine {
                     kind: StatusKind::Ready,
-                    message: self.profile_change_message("Replaced source for", &id),
+                    message,
                 };
             }
             Ok(ProfileOperationSuccess::Updated { id, profiles }) => {
@@ -1752,6 +1762,9 @@ mod tests {
 
         app.apply_profile_operation_result(Ok(ProfileOperationSuccess::SourceReplaced {
             id: "default".into(),
+            replacement: crate::profile::SourceReplacement {
+                inherited_fallback_removed: true,
+            },
             profiles: vec![ProfileSummary {
                 id: "default".into(),
                 has_backup: true,
@@ -1768,6 +1781,7 @@ mod tests {
                 .contains("without recreating proxy listeners")
         );
         assert!(!app.status.message.contains("hidden"));
+        assert!(app.status.message.contains("subscription's own groups"));
     }
 
     #[test]

@@ -40,6 +40,20 @@ pub struct ProfileSummary {
     pub source: ProfileSourceSummary,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceReplacement {
+    pub inherited_fallback_removed: bool,
+}
+
+impl SourceReplacement {
+    #[must_use]
+    pub fn notice(self) -> Option<&'static str> {
+        self.inherited_fallback_removed.then_some(
+            "Previous custom fallback does not match this subscription; using the subscription's own groups.",
+        )
+    }
+}
+
 struct SourceSwap {
     current: Vec<u8>,
     backup: Vec<u8>,
@@ -61,12 +75,17 @@ impl ProfileStore {
     }
 
     async fn load_source(&self, source: &ProfileSource) -> Result<Vec<u8>, ProfileError> {
-        match source.load(&self.client).await {
+        let contents = self.load_raw_source(source).await?;
+        source.apply_fallback(&contents)
+    }
+
+    async fn load_raw_source(&self, source: &ProfileSource) -> Result<Vec<u8>, ProfileError> {
+        match source.load_raw(&self.client).await {
             Err(ProfileError::DownloadRequest | ProfileError::DownloadStatus(_))
                 if self.fallback_client.is_some() =>
             {
                 source
-                    .load(
+                    .load_raw(
                         self.fallback_client
                             .as_ref()
                             .expect("fallback client checked"),
@@ -119,14 +138,27 @@ impl ProfileStore {
         &self,
         id: &str,
         mut source: ProfileSource,
-    ) -> Result<(), ProfileError> {
+    ) -> Result<SourceReplacement, ProfileError> {
         validate_id(id)?;
         let _lock = acquire_lock(&self.root)?;
         let directory = self.existing_profile_dir(id)?;
-        source.retain_policy_from(&read_source(&directory)?);
-        let contents = self.load_source(&source).await?;
+        let inherited = source.retain_policy_from(&read_source(&directory)?);
+        let raw = self.load_raw_source(&source).await?;
+        validate_profile(&raw)?;
+        // Download once: an incompatible inherited overlay must not force a
+        // second request or replace the provider's own groups with guessed nodes.
+        let (contents, inherited_fallback_removed) = match source.apply_fallback(&raw) {
+            Err(ProfileError::InvalidFallbackPolicy) if inherited => {
+                source.clear_fallback();
+                (raw, true)
+            }
+            result => (result?, false),
+        };
         validate_profile(&contents)?;
-        replace_source_with_backup(&directory, &source, &contents)
+        replace_source_with_backup(&directory, &source, &contents)?;
+        Ok(SourceReplacement {
+            inherited_fallback_removed,
+        })
     }
 
     pub fn rollback(&self, id: &str) -> Result<(), ProfileError> {
@@ -668,6 +700,87 @@ mod tests {
             store.list().unwrap()[0].source.display,
             first.to_string_lossy()
         );
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn incompatible_inherited_policy_is_removed_on_replace_and_rollback_restores_it() {
+        let base = temporary_directory();
+        fs::create_dir(&base).unwrap();
+        let first = base.join("first.yaml");
+        let second = base.join("second.yaml");
+        let document = "proxies:\n- {name: A, type: http, server: 127.0.0.1, port: 8080}\nproxy-groups:\n- {name: Custom, type: select, proxies: [A]}\n";
+        fs::write(&first, document).unwrap();
+        let store = ProfileStore::new(base.join("profiles")).unwrap();
+        store
+            .add(
+                "primary",
+                ProfileSource::from_local_file(&first)
+                    .unwrap()
+                    .with_fallback("Custom".into(), Some("A".into()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let path = store.profile_path("primary").unwrap();
+        let descriptor = path.with_file_name("source.toml");
+        let original = fs::read(&path).unwrap();
+        let original_source = fs::read(&descriptor).unwrap();
+        let variants = [
+            document.replace("name: Custom,", "name: BiuBiu,"),
+            document.replace("type: select", "type: fallback"),
+            document.replace("proxies: [A]", "proxies: [DIRECT]"),
+            format!("{document}- {{name: Custom Auto, type: select, proxies: [A]}}\n"),
+            "proxy-providers: {}\nproxy-groups: []\n".into(),
+        ];
+        for contents in variants {
+            fs::write(&second, &contents).unwrap();
+            let replacement = store
+                .replace_source("primary", ProfileSource::from_local_file(&second).unwrap())
+                .await
+                .unwrap();
+            assert!(replacement.inherited_fallback_removed);
+            assert!(replacement.notice().is_some());
+            assert_eq!(fs::read(&path).unwrap(), contents.as_bytes());
+            assert!(
+                !fs::read_to_string(&descriptor)
+                    .unwrap()
+                    .contains("[fallback]")
+            );
+            store.update("primary").await.unwrap();
+            assert_eq!(fs::read(&path).unwrap(), contents.as_bytes());
+            // Refresh creates its own rollback revision; replace again after restoring
+            // the original pair to check that a source replacement keeps that pair.
+            fs::write(&path, &original).unwrap();
+            fs::write(&descriptor, &original_source).unwrap();
+            store
+                .replace_source("primary", ProfileSource::from_local_file(&second).unwrap())
+                .await
+                .unwrap();
+            store.rollback("primary").unwrap();
+            assert_eq!(fs::read(&path).unwrap(), original);
+            assert_eq!(fs::read(&descriptor).unwrap(), original_source);
+        }
+        fs::write(&second, document.replace("name: Custom,", "name: Other,")).unwrap();
+        let explicit = ProfileSource::from_local_file(&second)
+            .unwrap()
+            .with_fallback("Missing".into(), None)
+            .unwrap();
+        assert_eq!(
+            store.replace_source("primary", explicit).await,
+            Err(ProfileError::InvalidFallbackPolicy)
+        );
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(fs::read(&descriptor).unwrap(), original_source);
+        fs::write(&second, "<html>subscription unavailable</html>").unwrap();
+        assert_eq!(
+            store
+                .replace_source("primary", ProfileSource::from_local_file(&second).unwrap())
+                .await,
+            Err(ProfileError::InvalidYamlRoot)
+        );
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(fs::read(&descriptor).unwrap(), original_source);
         fs::remove_dir_all(base).unwrap();
     }
 

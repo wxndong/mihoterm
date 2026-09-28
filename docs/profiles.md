@@ -45,9 +45,14 @@ the named node when it still exists. Nested groups and DIRECT/REJECT are not
 expanded into the automatic fallback. The generated group is the selector's
 first option and checks the Codex HTTPS target every 60 seconds, accepting its
 unauthenticated 401/405 responses. A missing selector, no eligible nodes, or a
-conflicting generated group name rejects the update and retains the cached
-profile. Source replacement in the CLI or TUI retains an existing fallback
-policy unless a new one is explicitly supplied.
+conflicting generated group name rejects a refresh and retains the cached
+profile. When replacing a source in the CLI or TUI, an existing custom fallback
+is retained only if it fits the new subscription. Otherwise MihoTerm removes
+that inherited policy, keeps the new subscription's own groups, and reports
+the change. It does not guess a replacement group or pool unrelated nodes.
+An explicitly supplied new fallback must be valid; mistakes still reject the
+replacement. Download or validation failures retain the old profile and source.
+The replaced source and its policy remain available through rollback.
 
 Profile IDs must match `[A-Za-z0-9][A-Za-z0-9_-]{0,39}`.
 

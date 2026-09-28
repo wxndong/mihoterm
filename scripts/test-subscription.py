@@ -152,6 +152,43 @@ def main():
         assert run('profile', 'update', 'fixture', '--apply', check=False).returncode!=0
         assert hashlib.sha256(path.read_bytes()).hexdigest()==before; echo()
         results.append('untrusted TLS remains rejected with the proxy fallback: PASS')
+        env['SSL_CERT_FILE'] = str(base/'ca.crt')
+        replacement_url = base/'replacement.url'
+        replacement_url.write_text(url_file.read_text().replace('/subscription', '/new-provider'))
+        next_document = json.loads(document('BiuNode'))
+        next_document['proxy-groups'][0]['name'] = 'BiuBiu'
+        next_document['rules'] = ['MATCH,BiuBiu']
+        descriptor = base/'state/profiles/fixture/source.toml'
+        old_pair = path.read_bytes(), descriptor.read_bytes()
+        invalid_runtime = json.loads(json.dumps(next_document))
+        invalid_runtime['proxies'][0]['type'] = 'invalid-protocol-fixture'
+        tls.body = json.dumps(invalid_runtime).encode()
+        failed = run('profile', 'source', 'fixture', '--url-file', str(replacement_url), '--apply', check=False)
+        assert failed.returncode != 0
+        assert (path.read_bytes(), descriptor.read_bytes()) == old_pair
+        assert record()['pid'] == original['pid']; echo()
+        results.append('new provider rejected by core restores old source, custom policy and live stream: PASS')
+        tls.body = json.dumps(next_document).encode()
+        requests_before = len(tls.requests)
+        replaced = run('profile', 'source', 'fixture', '--url-file', str(replacement_url), '--apply')
+        assert "subscription's own groups" in replaced.stdout
+        assert len(tls.requests) == requests_before + 1
+        assert '[fallback]' not in descriptor.read_text()
+        assert path.read_bytes() == tls.body
+        assert api('/proxies/BiuBiu')['all'] == ['A', 'BiuNode']
+        assert 'AI Auto' not in api('/proxies')['proxies']
+        assert record()['pid'] == original['pid']; echo()
+        token2 = base64.b64encode((record()['proxy_username']+':'+record()['proxy_password']).encode())
+        assert token2 == token and record()['mixed_port'] == original['mixed_port']
+        run('profile', 'update', 'fixture', '--apply'); echo()
+        assert path.read_bytes() == tls.body
+        current_pair = path.read_bytes(), descriptor.read_bytes()
+        failed = run('profile', 'source', 'fixture', '--url-file', str(replacement_url),
+                     '--fallback-group', 'Missing', '--apply', check=False)
+        assert failed.returncode != 0
+        assert (path.read_bytes(), descriptor.read_bytes()) == current_pair
+        echo()
+        results.append('different provider groups: one download, notice, persistent policy reset, unchanged listeners/stream; explicit invalid policy rejected: PASS')
     finally:
         if stream is not None: stream.close()
         for _ in range(20):

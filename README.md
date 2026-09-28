@@ -3,12 +3,13 @@
 A tiny, fast, keyboard-first TUI for [Mihomo](https://github.com/MetaCubeX/mihomo)
 on Linux.
 
-> **Status:** v0.1.0-alpha.6 is the current release, marked Latest on GitHub. Managed mode,
+> **Status:** v0.1.0-alpha.7 is the current release, marked Latest on GitHub. Managed mode,
 > user-local installation, and portable packaging are validated locally before
 > each release.
 
 See [reconnection and safe upgrades](docs/reconnect-update.md) for alpha.6
 recovery behavior and staging an upgrade while tasks are active.
+See [profiles](docs/profiles.md) for changing subscriptions with different groups.
 
 MihoTerm is an independent client for the Mihomo external-controller API. It
 does not provide proxy services, subscription content, or credentials.

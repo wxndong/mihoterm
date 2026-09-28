@@ -7,6 +7,26 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0-alpha.7] - 2026-09-28
+
+### Fixed
+
+- Replace subscriptions with different policy groups without requiring a new
+  profile: retain a compatible custom fallback, or remove the incompatible
+  inherited fallback and keep the new subscription's own groups.
+- Report removal of an inherited fallback in both the CLI and TUI only after
+  successful replacement. Explicitly supplied invalid policies remain errors.
+- Fetch each replacement document once, preserve strict same-source refresh
+  validation, and restore the old source and policy if live application fails.
+
+### Tests
+
+- Cover renamed groups, changed group types, missing leaf nodes, generated-name
+  collisions, provider-only documents, explicit invalid policies, and rollback.
+- Exercise HTTPS provider replacement against a real isolated Mihomo instance,
+  including rejected runtime configuration and unchanged authenticated listeners
+  and established streams.
+
 ## [0.1.0-alpha.6] - 2026-09-27
 
 ### Added
@@ -184,7 +204,8 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Request Mihomo-compatible YAML from subscription services that select their
   response format from the client identifier.
 
-[Unreleased]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.6...HEAD
+[Unreleased]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.7...HEAD
+[0.1.0-alpha.7]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.6...v0.1.0-alpha.7
 [0.1.0-alpha.6]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.5...v0.1.0-alpha.6
 [0.1.0-alpha.5]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.4...v0.1.0-alpha.5
 [0.1.0-alpha.4]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.3...v0.1.0-alpha.4
