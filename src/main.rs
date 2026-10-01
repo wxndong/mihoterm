@@ -828,10 +828,18 @@ async fn run_profile(
             if apply {
                 let manager = managed_session_manager(paths)?;
                 let result = async {
+                    let session = manager.active()?.ok_or(RuntimeError::SessionNotRunning)?;
+                    let before = session
+                        .api_client(Duration::from_secs(7))?
+                        .proxies()
+                        .await?;
+                    // Snapshot before reload: a rebuilt upstream fallback may
+                    // otherwise report a different first leaf after activation.
+                    let prior_leaf = mihoterm::runtime::recovery::selected_leaf(&before, &group);
                     manager
                         .switch_profile(&id, &store.profile_path(&id)?)
                         .await?;
-                    manager.activate_policy(&id).await?;
+                    manager.activate_policy(&id, prior_leaf.as_deref()).await?;
                     Ok::<(), Box<dyn std::error::Error>>(())
                 }
                 .await;

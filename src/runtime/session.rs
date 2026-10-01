@@ -442,7 +442,11 @@ impl SessionManager {
         Ok(())
     }
 
-    pub async fn activate_policy(&self, profile: &str) -> Result<(), RuntimeError> {
+    pub async fn activate_policy(
+        &self,
+        profile: &str,
+        prior_leaf: Option<&str>,
+    ) -> Result<(), RuntimeError> {
         let session = self.active()?.ok_or(RuntimeError::SessionNotRunning)?;
         if session.profile() != profile {
             return Err(RuntimeError::InvalidSession);
@@ -475,7 +479,9 @@ impl SessionManager {
         }
         // Activation must not rotate an already working in-scope route merely
         // because a generated fallback starts with a different first member.
-        let selection = super::recovery::selected_leaf(&proxies, &policy.group)
+        let selection = prior_leaf
+            .map(str::to_owned)
+            .or_else(|| super::recovery::selected_leaf(&proxies, &policy.group))
             .filter(|node| {
                 proxies
                     .proxies
