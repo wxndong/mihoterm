@@ -1,6 +1,6 @@
 [package]
 name = "mihoterm"
-version = "0.1.0-alpha.7"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A tiny, fast, keyboard-first TUI for Mihomo on Linux."
@@ -19,6 +19,7 @@ futures-util = "0.3.33"
 fs4 = "1.1.0"
 getrandom = "0.4.3"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29"] }
+rusqlite = { version = "=0.37.0", features = ["bundled"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls-no-provider", "stream"] }
 ring = "0.17.14"
 rustix = { version = "1.1.4", features = ["fs", "process"] }

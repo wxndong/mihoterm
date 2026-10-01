@@ -140,6 +140,15 @@ impl DesiredStateStore {
         self.mutate(|state| state.mode = mode.as_str().to_owned())
     }
 
+    pub fn record_policy_selection(&self, group: &str, selection: &str) -> Result<(), StateError> {
+        validate_name(group)?;
+        validate_name(selection)?;
+        self.mutate(|state| {
+            state.selections.insert("GLOBAL".into(), group.into());
+            state.selections.insert(group.into(), selection.into());
+        })
+    }
+
     pub fn record_selection(&self, group: &str, selection: &str) -> Result<(), StateError> {
         validate_name(group)?;
         validate_name(selection)?;

@@ -3,11 +3,11 @@
 A tiny, fast, keyboard-first TUI for [Mihomo](https://github.com/MetaCubeX/mihomo)
 on Linux.
 
-> **Status:** v0.1.0-alpha.7 is the current release, marked Latest on GitHub. Managed mode,
+> **Status:** v0.1.0 is the current release, marked Latest on GitHub. Managed mode,
 > user-local installation, and portable packaging are validated locally before
 > each release.
 
-See [reconnection and safe upgrades](docs/reconnect-update.md) for alpha.6
+See [reconnection and safe upgrades](docs/reconnect-update.md) for scoped
 recovery behavior and staging an upgrade while tasks are active.
 See [profiles](docs/profiles.md) for changing subscriptions with different groups.
 
@@ -34,6 +34,8 @@ network.
 - Inspect live connections and real-time throughput in a read-only table.
 - Select proxies and modes through an explicit confirmation step; optionally reconnect only the selected group's existing connections.
 - Probe Google, OpenAI API, Codex, or GitHub without changing the active proxy.
+- Enable persistent recovery within any explicitly chosen static subscription
+  selector, including nested members, with optional bounded Codex stream feedback.
 - Load additional HTTPS probe targets from a protected TOML configuration.
 - Import Mihomo YAML from a protected subscription URL file or local file.
 - Add, inspect in redacted form, replace, validate, update, and roll back named

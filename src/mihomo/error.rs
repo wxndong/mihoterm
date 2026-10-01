@@ -23,6 +23,9 @@ impl std::fmt::Display for RequestFailure {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ApiError {
+    #[error("probe did not confirm the target's expected HTTP status")]
+    ProbeUnverified,
+
     #[error("controller URL is invalid")]
     InvalidControllerUrl,
 

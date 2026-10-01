@@ -296,6 +296,10 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             );
             Ok(())
         }
+        Some(Command::Watch) => managed_session_manager(&paths)?
+            .watch_recovery()
+            .await
+            .map_err(Into::into),
         Some(Command::Doctor { repair }) => run_doctor(&paths, repair).await,
         Some(Command::Probe { proxy, targets }) => {
             let probes = load_probe_targets(paths.config_file(), config_is_explicit)?;
@@ -578,6 +582,26 @@ async fn run_doctor(paths: &AppPaths, repair: bool) -> Result<(), Box<dyn std::e
         }
     }
 
+    match mihoterm::runtime::recovery::read_state(paths.state_dir()) {
+        Ok(state) if !state.group.is_empty() => {
+            println!(
+                "scoped recovery: {} | group {} | checked {} | feedback {}",
+                state.status, state.group, state.checked_at, state.feedback_status
+            );
+            for event in state.events.iter().rev().take(3) {
+                println!(
+                    "  {} {} | {} -> {}",
+                    event.at,
+                    event.reason,
+                    event.from.as_deref().unwrap_or("unknown"),
+                    event.to.as_deref().unwrap_or("unchanged")
+                );
+            }
+        }
+        Ok(_) => println!("scoped recovery: no observations yet"),
+        Err(_) => println!("scoped recovery: diagnostic state unavailable"),
+    }
+
     let clients = stale_clients(session.as_ref().map(ManagedSession::session_id));
     if clients.is_empty() {
         println!("inherited clients: no stale MihoTerm session markers found");
@@ -756,6 +780,79 @@ async fn run_profile(
             }
             if let Some(notice) = replacement.notice() {
                 println!("{notice}");
+            }
+        }
+        ProfileCommand::Policy {
+            id,
+            group,
+            disable,
+            codex_log_db,
+            apply,
+        } => {
+            if apply {
+                let manager = managed_session_manager(paths)?;
+                let session = manager.active()?.ok_or(RuntimeError::SessionNotRunning)?;
+                if session.profile() != id {
+                    return Err(io::Error::other(
+                        "policy --apply requires the currently active profile",
+                    )
+                    .into());
+                }
+                if !disable
+                    && session
+                        .api_client(Duration::from_secs(7))?
+                        .configuration()
+                        .await?
+                        .mode
+                        .as_deref()
+                        != Some("global")
+                {
+                    return Err(io::Error::other(
+                        "managed recovery requires Global mode; select it explicitly first",
+                    )
+                    .into());
+                }
+            }
+            if disable {
+                store.disable_policy(&id).await?;
+                if apply {
+                    apply_profile_revision(&store, &id, paths).await?;
+                }
+                println!("Removed local recovery policy; using the subscription's own groups.");
+                return Ok(());
+            }
+            let group = group.ok_or_else(|| io::Error::other("a recovery group is required"))?;
+            store
+                .configure_policy(&id, group.clone(), codex_log_db)
+                .await?;
+            if apply {
+                let manager = managed_session_manager(paths)?;
+                let result = async {
+                    manager
+                        .switch_profile(&id, &store.profile_path(&id)?)
+                        .await?;
+                    manager.activate_policy(&id).await?;
+                    Ok::<(), Box<dyn std::error::Error>>(())
+                }
+                .await;
+                if let Err(error) = result {
+                    store.rollback(&id)?;
+                    if let Ok(Some(session)) = manager.active() {
+                        if session.profile() == id {
+                            manager
+                                .switch_profile(&id, &store.profile_path(&id)?)
+                                .await?;
+                        }
+                    }
+                    return Err(error);
+                }
+                println!(
+                    "Activated persistent recovery in {group}; existing listeners and streams preserved."
+                );
+            } else {
+                println!(
+                    "Stored recovery policy for {group}; running selection unchanged. Use --apply to activate it."
+                );
             }
         }
         ProfileCommand::Update { id, apply } => {

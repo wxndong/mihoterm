@@ -7,6 +7,36 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-02
+
+### Added
+
+- Opt-in `profile policy ID --group NAME --apply` for persistent Codex recovery
+  within the chosen subscription selector, including static nested members.
+- Bounded repeated-probe recovery, cooldown, temporary node exclusion, and private
+  diagnostic events. Recovery never leaves the configured group.
+- Optional read-only Codex diagnostic feedback for repeated transport failures
+  when short probes still pass; auth, quota and explicit service errors are excluded.
+- `watch` for activating the new recovery monitor alongside an older supervisor
+  without replacing its core, listeners or established connections.
+- Real-core fault-injection coverage for target-specific failures, stalled SSE,
+  scope limits, refresh/restart persistence and staged upgrades.
+
+### Fixed
+
+- Prevent aligned controller and recovery timers from repeatedly skipping
+  network checks because of a briefly held session lock.
+- Verify Mihomo's per-URL expected-status evidence instead of treating a positive
+  delay as proof of health; rejected HTTP statuses must not be reported healthy.
+- Keep local recovery policy separate from generated runtime configuration and
+  retain the previous revision when regeneration or application fails.
+
+### Release scope
+
+- Stable Linux x86_64 portable release with English release metadata. ARM targets
+  remain unvalidated. External availability and uninterrupted model streams are
+  not guaranteed by short endpoint checks.
+
 ## [0.1.0-alpha.7] - 2026-09-28
 
 ### Fixed
@@ -204,7 +234,8 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Request Mihomo-compatible YAML from subscription services that select their
   response format from the client identifier.
 
-[Unreleased]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.7...HEAD
+[Unreleased]: https://github.com/wxndong/mihoterm/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.7...v0.1.0
 [0.1.0-alpha.7]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.6...v0.1.0-alpha.7
 [0.1.0-alpha.6]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.5...v0.1.0-alpha.6
 [0.1.0-alpha.5]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.4...v0.1.0-alpha.5

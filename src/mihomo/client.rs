@@ -3,7 +3,7 @@ use std::{fmt, sync::Arc, time::Duration};
 use futures_util::{StreamExt, stream};
 use reqwest::{Method, RequestBuilder};
 use secrecy::{ExposeSecret, SecretString};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use url::Url;
 
 use crate::probe::ProbeTarget;
@@ -216,7 +216,34 @@ impl ApiClient {
             .append_pair("expected", target.expected());
         let request = self.authorize(self.http.request(Method::GET, endpoint));
 
-        self.send_json(operation, request).await
+        let delay: DelayResponse = self.send_json(operation, request).await?;
+        // Mihomo 1.19.x can return a positive delay and HTTP 200 even when
+        // expected-status does not match. The per-URL history is authoritative;
+        // the generic `alive` flag only records transport success.
+        #[derive(Deserialize)]
+        struct Evidence {
+            #[serde(default)]
+            extra: std::collections::BTreeMap<String, TargetEvidence>,
+        }
+        #[derive(Deserialize)]
+        struct TargetEvidence {
+            alive: bool,
+        }
+        let endpoint = self.endpoint_segments(operation, &["proxies", proxy])?;
+        let evidence: Evidence = self
+            .send_json(
+                operation,
+                self.authorize(self.http.request(Method::GET, endpoint)),
+            )
+            .await?;
+        if !evidence
+            .extra
+            .get(target.url().as_str())
+            .is_some_and(|e| e.alive)
+        {
+            return Err(ApiError::ProbeUnverified);
+        }
+        Ok(delay)
     }
 
     async fn get_json<T>(&self, operation: &'static str, path: &str) -> Result<T, ApiError>

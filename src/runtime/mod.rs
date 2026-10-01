@@ -1,6 +1,7 @@
 mod config;
 mod error;
 mod process;
+pub mod recovery;
 mod session;
 
 pub use error::RuntimeError;

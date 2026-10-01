@@ -124,6 +124,38 @@ impl ProfileStore {
         result
     }
 
+    pub fn source(&self, id: &str) -> Result<ProfileSource, ProfileError> {
+        validate_id(id)?;
+        let _lock = acquire_lock(&self.root)?;
+        read_source(&self.existing_profile_dir(id)?)
+    }
+
+    pub async fn configure_policy(
+        &self,
+        id: &str,
+        group: String,
+        codex_log_db: Option<PathBuf>,
+    ) -> Result<(), ProfileError> {
+        validate_id(id)?;
+        let _lock = acquire_lock(&self.root)?;
+        let directory = self.existing_profile_dir(id)?;
+        let source = read_source(&directory)?.with_managed_policy(group, codex_log_db)?;
+        let contents = self.load_source(&source).await?;
+        validate_profile(&contents)?;
+        replace_source_with_backup(&directory, &source, &contents)
+    }
+
+    pub async fn disable_policy(&self, id: &str) -> Result<(), ProfileError> {
+        validate_id(id)?;
+        let _lock = acquire_lock(&self.root)?;
+        let directory = self.existing_profile_dir(id)?;
+        let mut source = read_source(&directory)?;
+        source.clear_fallback();
+        let contents = self.load_raw_source(&source).await?;
+        validate_profile(&contents)?;
+        replace_source_with_backup(&directory, &source, &contents)
+    }
+
     pub async fn update(&self, id: &str) -> Result<(), ProfileError> {
         validate_id(id)?;
         let _lock = acquire_lock(&self.root)?;

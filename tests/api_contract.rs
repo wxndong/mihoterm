@@ -213,7 +213,15 @@ async fn listener_preserving_reload_uses_non_forced_payload_update() {
 
 #[tokio::test]
 async fn probe_request_preserves_target_and_expected_status() {
-    let (controller, request) = spawn_json_once("200 OK", r#"{"delay":47,"meanDelay":51}"#).await;
+    let (controller, requests) = spawn_scripted_json_server(vec![
+        ("/delay?", "200 OK", r#"{"delay":47,"meanDelay":51}"#),
+        (
+            "/api/proxies/Proxy%20A ",
+            "200 OK",
+            r#"{"extra":{"https://example.com/health?region=test":{"alive":true}}}"#,
+        ),
+    ])
+    .await;
     let client = ApiClient::new(&controller, None).expect("client should initialize");
     let target = ProbeTarget::new(
         "Example",
@@ -227,7 +235,8 @@ async fn probe_request_preserves_target_and_expected_status() {
         .probe_delay("Proxy A", &target)
         .await
         .expect("probe should succeed");
-    let request = request.await.expect("mock should capture request");
+    let requests = requests.await.expect("mock should capture requests");
+    let request = &requests[0];
     let request_target = request
         .lines()
         .next()
@@ -256,6 +265,27 @@ async fn probe_request_preserves_target_and_expected_status() {
     assert_eq!(result.mean_delay, Some(51));
 }
 
+#[tokio::test]
+async fn positive_delay_does_not_override_failed_or_missing_target_evidence() {
+    for body in [
+        r#"{"alive":true,"extra":{"https://example.com/":{"alive":false}}}"#,
+        r#"{"alive":true,"extra":{}}"#,
+    ] {
+        let (controller, requests) = spawn_scripted_json_server(vec![
+            ("/delay?", "200 OK", r#"{"delay":10}"#),
+            ("/api/proxies/A ", "200 OK", body),
+        ])
+        .await;
+        let client = ApiClient::new(&controller, None).unwrap();
+        let target = ProbeTarget::new("Target", "https://example.com/", "204", 1000).unwrap();
+        assert_eq!(
+            client.probe_delay("A", &target).await,
+            Err(ApiError::ProbeUnverified)
+        );
+        requests.await.unwrap();
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn probe_command_reports_every_target_and_fails_after_partial_reachability() {
     let (controller, requests) = spawn_scripted_json_server(vec![
@@ -263,6 +293,9 @@ async fn probe_command_reports_every_target_and_fails_after_partial_reachability
         ("api.openai.com", "200 OK", r#"{"delay":25}"#),
         ("chatgpt.com", "504 Gateway Timeout", ""),
         ("github.com", "200 OK", r#"{"delay":33}"#),
+        ("/api/proxies/Proxy%20A ", "200 OK", r#"{"extra":{"https://www.gstatic.com/generate_204":{"alive":true},"https://api.openai.com/v1/models":{"alive":true},"https://github.com/robots.txt":{"alive":true}}}"#),
+        ("/api/proxies/Proxy%20A ", "200 OK", r#"{"extra":{"https://www.gstatic.com/generate_204":{"alive":true},"https://api.openai.com/v1/models":{"alive":true},"https://github.com/robots.txt":{"alive":true}}}"#),
+        ("/api/proxies/Proxy%20A ", "200 OK", r#"{"extra":{"https://www.gstatic.com/generate_204":{"alive":true},"https://api.openai.com/v1/models":{"alive":true},"https://github.com/robots.txt":{"alive":true}}}"#),
     ])
     .await;
     let base = temporary_directory();
@@ -305,11 +338,11 @@ async fn probe_command_reports_every_target_and_fails_after_partial_reachability
     );
 
     let requests = requests.await.expect("mock should capture all requests");
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 7);
     assert!(
         requests
             .iter()
-            .all(|request| request.starts_with("GET /api/proxies/Proxy%20A/delay?"))
+            .all(|request| request.starts_with("GET /api/proxies/Proxy%20A"))
     );
     assert!(
         requests

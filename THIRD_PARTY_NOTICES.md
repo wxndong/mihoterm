@@ -7,6 +7,11 @@ Rust crates linked into the `mihoterm` executable retain their own licenses.
 Their versions, project links, and complete license texts are generated in
 [THIRD-PARTY-LICENSES.html](THIRD-PARTY-LICENSES.html).
 
+The executable includes SQLite through `libsqlite3-sys` and `rusqlite`. The
+SQLite amalgamation is in the public domain; see the upstream
+[SQLite copyright statement](https://www.sqlite.org/copyright.html). Rust wrapper
+licenses are included in the generated license report.
+
 Portable release archives also contain an unmodified official
 [Mihomo](https://github.com/MetaCubeX/mihomo) executable. Mihomo is a separate
 program licensed under GPL-3.0. Each archive includes:

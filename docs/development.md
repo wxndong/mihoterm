@@ -128,3 +128,19 @@ malformed updates, and rejected untrusted TLS certificates. It also checks
 replacement by a subscription with different groups, one successful document
 download, removal of an incompatible inherited policy, strict explicit-policy
 validation, and restoration of the old source/policy after core rejection.
+
+Run the scoped-recovery gate against the same extracted portable executable:
+
+```console
+$ python3 scripts/test-managed-recovery.py --binary /path/to/bundle/mihoterm \
+    --mihomo /path/to/bundle/mihomo --root "$TMPDIR"
+```
+
+It uses a private test CA, local HTTPS/SSE servers, an explicit core wrapper
+that trusts only the fixture CA, and an isolated diagnostic SQLite database.
+It exercises wrong-status responses with positive delays, in-scope failover,
+all-nodes-down behavior, nested membership, policy refresh/restart, stream
+feedback, ignored service errors, cooldown, and policy removal. No production
+credentials or remote model requests are involved in this gate. Add
+`--legacy-binary /path/to/older/mihoterm` to validate the staged watcher upgrade
+and confirm stopping the watcher leaves the older core and streams intact.

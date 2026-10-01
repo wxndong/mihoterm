@@ -219,7 +219,7 @@ impl SessionManager {
             signal(SignalKind::terminate()).map_err(|_| RuntimeError::SupervisorSignal)?;
         let mut started_at = Instant::now();
         let mut consecutive_restarts = 0;
-        let health_monitor = tokio::spawn(self.clone().health_loop());
+        let health_monitor = tokio::spawn(self.clone().health_loop(false));
         let controller = runtime.api_client(CONTROLLER_TIMEOUT)?;
         let mut controller_interval = tokio::time::interval_at(
             tokio::time::Instant::now() + CONTROLLER_INTERVAL,
@@ -380,6 +380,16 @@ impl SessionManager {
         ignore_cooldown: bool,
     ) -> Result<RecoveryOutcome, RuntimeError> {
         let session = self.active()?.ok_or(RuntimeError::SessionNotRunning)?;
+        if let Some(policy) = self.managed_policy(session.profile())? {
+            return super::recovery::tick(
+                &self.state_root,
+                session.profile(),
+                &policy,
+                &session.api_client(Duration::from_secs(7))?,
+                ignore_cooldown,
+            )
+            .await;
+        }
         let observation = observe_session_health(&session).await;
         match observation.report.status {
             HealthStatus::Healthy => return Ok(RecoveryOutcome::AlreadyHealthy),
@@ -409,20 +419,154 @@ impl SessionManager {
             .await
     }
 
-    async fn health_loop(self) {
-        let mut interval = tokio::time::interval_at(
-            tokio::time::Instant::now() + HEALTH_INTERVAL,
-            HEALTH_INTERVAL,
-        );
+    pub fn managed_policy(
+        &self,
+        profile: &str,
+    ) -> Result<Option<crate::profile::FallbackPolicy>, RuntimeError> {
+        let store = ProfileStore::new(self.state_root.join("profiles"))
+            .map_err(|_| RuntimeError::PersistentState)?;
+        let source = store
+            .source(profile)
+            .map_err(|_| RuntimeError::PersistentState)?;
+        Ok(source.fallback_policy().filter(|p| p.managed).cloned())
+    }
+
+    /// Upgrade-time monitor: it reuses the existing session and never replaces
+    /// its owner, child, listeners, or established connections.
+    pub async fn watch_recovery(self) -> Result<(), RuntimeError> {
+        let session = self.active()?.ok_or(RuntimeError::SessionNotRunning)?;
+        if self.managed_policy(session.profile())?.is_none() {
+            return Err(RuntimeError::PersistentState);
+        }
+        self.health_loop(true).await;
+        Ok(())
+    }
+
+    pub async fn activate_policy(&self, profile: &str) -> Result<(), RuntimeError> {
+        let session = self.active()?.ok_or(RuntimeError::SessionNotRunning)?;
+        if session.profile() != profile {
+            return Err(RuntimeError::InvalidSession);
+        }
+        let policy = self
+            .managed_policy(profile)?
+            .ok_or(RuntimeError::PersistentState)?;
+        let client = session.api_client(Duration::from_secs(7))?;
+        let proxies = client
+            .proxies()
+            .await
+            .map_err(|_| RuntimeError::ControllerUnavailable)?;
+        if client
+            .configuration()
+            .await
+            .map_err(|_| RuntimeError::ControllerUnavailable)?
+            .mode
+            .as_deref()
+            != Some("global")
+        {
+            return Err(RuntimeError::SessionReload);
+        }
+        let auto = format!("{} Auto", policy.group);
+        if !proxies
+            .proxies
+            .get(&policy.group)
+            .is_some_and(|p| p.all.contains(&auto))
+        {
+            return Err(RuntimeError::SessionReload);
+        }
+        let old_group = proxies
+            .proxies
+            .get(&policy.group)
+            .and_then(|p| p.now.clone());
+        let old_global = proxies.proxies.get("GLOBAL").and_then(|p| p.now.clone());
+        let result = async {
+            client
+                .select_proxy(&policy.group, &auto)
+                .await
+                .map_err(|_| RuntimeError::SessionReload)?;
+            client
+                .select_proxy("GLOBAL", &policy.group)
+                .await
+                .map_err(|_| RuntimeError::SessionReload)?;
+            self.desired
+                .record_policy_selection(&policy.group, &auto)
+                .map_err(|_| RuntimeError::PersistentState)
+        }
+        .await;
+        if result.is_err() {
+            if let Some(old) = old_group {
+                let _ = client.select_proxy(&policy.group, &old).await;
+            }
+            if let Some(old) = old_global {
+                let _ = client.select_proxy("GLOBAL", &old).await;
+            }
+        }
+        result
+    }
+
+    async fn health_loop(self, hold_legacy_recovery: bool) {
+        let mut legacy_checked = Instant::now();
+        let mut interval = tokio::time::interval(Duration::from_secs(15));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
+        'ticks: loop {
             interval.tick().await;
-            let session = match self.active() {
-                Ok(Some(session)) => session,
-                Ok(None) => return,
-                Err(RuntimeError::SessionBusy) => continue,
-                Err(_) => return,
+            // The five-second controller check can hold this lock at every
+            // fifteen-second recovery tick. A bounded retry prevents phase-
+            // aligned timers from starving network recovery indefinitely.
+            let deadline = Instant::now() + Duration::from_secs(1);
+            let session = loop {
+                match self.active() {
+                    Ok(Some(session)) => break session,
+                    Ok(None) => return,
+                    Err(RuntimeError::SessionBusy) if Instant::now() < deadline => {
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                    Err(RuntimeError::SessionBusy) => continue 'ticks,
+                    Err(error) => {
+                        eprintln!("mihoterm: recovery session unavailable: {error}");
+                        continue 'ticks;
+                    }
+                }
             };
+            match self.managed_policy(session.profile()) {
+                Ok(Some(policy)) => {
+                    // A watch process can coexist with an older supervisor. Lease
+                    // its existing network cooldown so only this scoped monitor
+                    // changes routes; the old child-liveness loop remains active.
+                    if hold_legacy_recovery
+                        && self
+                            .desired
+                            .mark_recovery_attempt(unix_seconds_now())
+                            .is_err()
+                    {
+                        eprintln!("mihoterm: cannot reserve legacy network recovery cooldown");
+                        continue;
+                    }
+                    if let Ok(client) = session.api_client(Duration::from_secs(7)) {
+                        if let Err(error) = super::recovery::tick(
+                            &self.state_root,
+                            session.profile(),
+                            &policy,
+                            &client,
+                            false,
+                        )
+                        .await
+                        {
+                            eprintln!("mihoterm: scoped recovery unavailable: {error}");
+                        }
+                    }
+                    continue;
+                }
+                Err(error) => {
+                    eprintln!("mihoterm: stored policy cannot be read: {error}");
+                    continue;
+                }
+                Ok(None) if hold_legacy_recovery => return,
+                Ok(None) => {}
+            }
+            if legacy_checked.elapsed() < HEALTH_INTERVAL {
+                continue;
+            }
+            legacy_checked = Instant::now();
             let first = observe_session_health(&session).await;
             if first.report.status == HealthStatus::Healthy {
                 self.remember_healthy_selection(first.selection.as_deref());
@@ -436,7 +580,10 @@ impl SessionManager {
                 Ok(Some(session)) => session,
                 Ok(None) => return,
                 Err(RuntimeError::SessionBusy) => continue,
-                Err(_) => return,
+                Err(error) => {
+                    eprintln!("mihoterm: recovery session unavailable: {error}");
+                    continue;
+                }
             };
             let second = observe_session_health(&session).await;
             if second.report.status == HealthStatus::Healthy {
@@ -553,6 +700,18 @@ impl SessionManager {
         profile_path: &Path,
     ) -> Result<(ManagedSession, RecoveryOutcome), RuntimeError> {
         let session = self.switch_profile(profile, profile_path).await?;
+        if let Some(policy) = self.managed_policy(profile)? {
+            let outcome = super::recovery::tick(
+                &self.state_root,
+                profile,
+                &policy,
+                &session.api_client(Duration::from_secs(7))?,
+                false,
+            )
+            .await
+            .unwrap_or(RecoveryOutcome::Degraded);
+            return Ok((session, outcome));
+        }
         let observation = observe_session_health(&session).await;
         let outcome = match observation.report.status {
             HealthStatus::Healthy => {
@@ -918,7 +1077,7 @@ fn write_record(root: &Path, record: &StoredSession) -> Result<(), RuntimeError>
     result
 }
 
-fn replace_private(path: &Path, contents: &[u8]) -> Result<(), RuntimeError> {
+pub(super) fn replace_private(path: &Path, contents: &[u8]) -> Result<(), RuntimeError> {
     let parent = path.parent().ok_or(RuntimeError::ConfigurationWrite)?;
     let temporary = parent.join(format!(".runtime-{}.tmp", random_hex::<8>()?));
     let result = (|| {

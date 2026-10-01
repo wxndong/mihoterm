@@ -5,5 +5,6 @@ mod store;
 mod validate;
 
 pub use error::ProfileError;
+pub use policy::FallbackPolicy;
 pub use source::{ProfileSource, ProfileSourceSummary};
 pub use store::{ProfileStore, ProfileSummary, SourceReplacement};

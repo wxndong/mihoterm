@@ -90,9 +90,30 @@ impl ProfileSource {
         let policy = FallbackPolicy {
             group,
             preferred_proxy,
+            managed: false,
+            codex_log_db: None,
         };
         policy.validate()?;
         self.fallback = Some(policy);
+        Ok(self)
+    }
+
+    #[must_use]
+    pub fn fallback_policy(&self) -> Option<&FallbackPolicy> {
+        self.fallback.as_ref()
+    }
+
+    pub fn with_managed_policy(
+        mut self,
+        group: String,
+        codex_log_db: Option<PathBuf>,
+    ) -> Result<Self, ProfileError> {
+        self = self.with_fallback(group, None)?;
+        if let Some(policy) = &mut self.fallback {
+            policy.managed = true;
+            policy.codex_log_db = codex_log_db;
+            policy.validate()?;
+        }
         Ok(self)
     }
 

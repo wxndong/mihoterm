@@ -56,6 +56,16 @@ The replaced source and its policy remain available through rollback.
 
 Profile IDs must match `[A-Za-z0-9][A-Za-z0-9_-]{0,39}`.
 
+## Managed recovery policy
+
+For continuous recovery, use `profile policy` on an existing source instead of
+replacing its URL. `--apply` requires the active profile in Global mode and
+persists both the policy and the selected generated group. It does not change
+operating mode implicitly. Static nested members are supported by this policy;
+legacy `--fallback-group` retains its direct-member behavior for compatibility.
+See [scoped recovery](reconnect-update.md#scoped-recovery) for configuration,
+feedback, failure handling and removal.
+
 ## Operations
 
 In managed TUI mode, press `s` to open the profile page:

@@ -73,6 +73,9 @@ pub enum Command {
         repair: bool,
     },
 
+    /// Monitor an existing managed session during a non-disruptive upgrade.
+    Watch,
+
     /// Probe configured HTTPS targets through one Mihomo proxy.
     Probe {
         /// Mihomo proxy or policy-group name to probe without changing selection.
@@ -250,6 +253,23 @@ pub enum ProfileCommand {
         #[arg(long, value_name = "NAME", requires = "fallback_group")]
         preferred_proxy: Option<String>,
         /// Apply the validated source and policy without recreating listeners.
+        #[arg(long)]
+        apply: bool,
+    },
+
+    /// Persist and activate bounded Codex recovery for an existing source.
+    Policy {
+        id: String,
+        /// Explicit selector whose descendant nodes define the recovery boundary.
+        #[arg(long, required_unless_present = "disable", conflicts_with = "disable")]
+        group: Option<String>,
+        /// Remove the local recovery policy and restore the subscription's own groups.
+        #[arg(long, conflicts_with = "codex_log_db")]
+        disable: bool,
+        /// Optional owner-local Codex logs database; only new transport warnings are read.
+        #[arg(long, value_name = "PATH")]
+        codex_log_db: Option<PathBuf>,
+        /// Apply and select the policy without recreating proxy listeners.
         #[arg(long)]
         apply: bool,
     },
