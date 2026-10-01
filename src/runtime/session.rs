@@ -473,6 +473,16 @@ impl SessionManager {
         {
             return Err(RuntimeError::SessionReload);
         }
+        // Activation must not rotate an already working in-scope route merely
+        // because a generated fallback starts with a different first member.
+        let selection = super::recovery::selected_leaf(&proxies, &policy.group)
+            .filter(|node| {
+                proxies
+                    .proxies
+                    .get(&auto)
+                    .is_some_and(|p| p.all.contains(node))
+            })
+            .unwrap_or_else(|| auto.clone());
         let old_group = proxies
             .proxies
             .get(&policy.group)
@@ -480,7 +490,7 @@ impl SessionManager {
         let old_global = proxies.proxies.get("GLOBAL").and_then(|p| p.now.clone());
         let result = async {
             client
-                .select_proxy(&policy.group, &auto)
+                .select_proxy(&policy.group, &selection)
                 .await
                 .map_err(|_| RuntimeError::SessionReload)?;
             client
@@ -488,7 +498,7 @@ impl SessionManager {
                 .await
                 .map_err(|_| RuntimeError::SessionReload)?;
             self.desired
-                .record_policy_selection(&policy.group, &auto)
+                .record_policy_selection(&policy.group, &selection)
                 .map_err(|_| RuntimeError::PersistentState)
         }
         .await;

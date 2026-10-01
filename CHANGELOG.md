@@ -24,6 +24,8 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Preserve the active in-scope leaf when enabling recovery, instead of rotating
+  a working route to the first member of a new fallback.
 - Prevent aligned controller and recovery timers from repeatedly skipping
   network checks because of a briefly held session lock.
 - Verify Mihomo's per-URL expected-status evidence instead of treating a positive

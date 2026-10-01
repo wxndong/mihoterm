@@ -209,7 +209,8 @@ def main():
                     wait_for(lambda: (case/'runtime/session.json').exists())
                 original = record()
                 run('profile','policy','fixture','--group','Research fixture','--codex-log-db',str(dbpath),'--apply')
-                assert selected() == 'Research fixture Auto'
+                assert selected() == 'B', 'activation must retain the previously selected nested leaf'
+                assert 'Research fixture Auto' in api('/proxies/'+urllib.parse.quote('Research fixture',safe=''))['all']
                 assert api('/proxies/GLOBAL')['now'] == 'Research fixture'
                 run('select','--group','Research fixture','--proxy','A')
                 if scenario == 'legacy':

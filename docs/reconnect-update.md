@@ -88,6 +88,8 @@ $ mihoterm profile policy primary --group 'My AI Group' --apply
 $ mihoterm doctor
 ```
 
+Activation preserves the current leaf when it is inside the boundary; it does
+not rotate a working route to the generated fallback's first node.
 The named selector defines the complete node boundary. Static nested groups are
 expanded with cycle detection and deduplication; DIRECT/REJECT and unrelated
 nodes are excluded. Dynamic providers or include-all membership are rejected
@@ -172,3 +174,6 @@ still-running release or the verified rollback copy before that cutover.
   community observations, not proof that every disconnect is a proxy fault.
 - [Codex stale endpoint report](https://github.com/openai/codex/issues/47264)
   supports preserving inherited client endpoints across upgrades.
+- [Codex workspace-routing regression report](https://github.com/openai/codex/issues/48476)
+  distinguishes authenticated bootstrap requests from inference reachability.
+  This is why release validation also runs a separate real Codex canary.
