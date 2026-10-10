@@ -291,7 +291,6 @@ async fn probe_command_reports_every_target_and_fails_after_partial_reachability
     let (controller, requests) = spawn_scripted_json_server(vec![
         ("generate_204", "200 OK", r#"{"delay":21,"meanDelay":22}"#),
         ("api.openai.com", "200 OK", r#"{"delay":25}"#),
-        ("chatgpt.com", "504 Gateway Timeout", ""),
         ("github.com", "200 OK", r#"{"delay":33}"#),
         ("/api/proxies/Proxy%20A ", "200 OK", r#"{"extra":{"https://www.gstatic.com/generate_204":{"alive":true},"https://api.openai.com/v1/models":{"alive":true},"https://github.com/robots.txt":{"alive":true}}}"#),
         ("/api/proxies/Proxy%20A ", "200 OK", r#"{"extra":{"https://www.gstatic.com/generate_204":{"alive":true},"https://api.openai.com/v1/models":{"alive":true},"https://github.com/robots.txt":{"alive":true}}}"#),
@@ -328,7 +327,7 @@ async fn probe_command_reports_every_target_and_fails_after_partial_reachability
         concat!(
             "Google: Proxy A responded in 21 ms\n",
             "OpenAI API: Proxy A responded in 25 ms\n",
-            "Codex: Proxy A failed: probe proxy returned HTTP 504\n",
+            "Codex: Proxy A failed: Codex POST probe requires an active managed node-bound listener\n",
             "GitHub: Proxy A responded in 33 ms\n"
         )
     );
@@ -338,7 +337,7 @@ async fn probe_command_reports_every_target_and_fails_after_partial_reachability
     );
 
     let requests = requests.await.expect("mock should capture all requests");
-    assert_eq!(requests.len(), 7);
+    assert_eq!(requests.len(), 6);
     assert!(
         requests
             .iter()

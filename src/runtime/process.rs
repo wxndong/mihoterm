@@ -65,6 +65,10 @@ impl ManagedRuntime {
         endpoint_path: &Path,
     ) -> Result<Self, RuntimeError> {
         let executable = resolve_executable(mihomo)?;
+        let state_root = endpoint_path
+            .parent()
+            .ok_or(RuntimeError::PersistentState)?;
+        super::tun::TunSettings::load(state_root)?.validate_permissions(&executable)?;
         let runtime_root = prepare_runtime_root(runtime_root)?;
         let runtime_dir = create_runtime_directory(&runtime_root)?;
 
@@ -128,6 +132,10 @@ impl ManagedRuntime {
             proxy_password.expose_secret(),
             mode,
         )?;
+        let state_root = endpoint_path
+            .parent()
+            .ok_or(RuntimeError::PersistentState)?;
+        let configuration = super::tun::TunSettings::load(state_root)?.apply(configuration)?;
         let configuration_path = runtime_dir.join(RUNTIME_CONFIG);
         write_private(&configuration_path, &configuration)?;
         sync_directory(&runtime_dir)?;

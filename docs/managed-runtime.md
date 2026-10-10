@@ -103,8 +103,9 @@ ordinary outbound behavior. It overrides inbound and system-changing settings:
 - HTTP, SOCKS, redirect, and TProxy ports are disabled;
 - one mixed proxy port and one controller port are allocated on first use and retained;
 - the mixed port requires a generated username and password;
-- TUN, iptables, NTP system writes, TUIC server, custom listeners, and tunnels
-  are disabled;
+- subscription TUN, iptables, NTP system writes, TUIC server, custom listeners,
+  and tunnels are disabled; trusted [optional TUN settings](tun.md) can explicitly
+  enable current-UID capture after core capabilities are provisioned;
 - alternate TLS, Unix-socket, and named-pipe controllers are disabled;
 - external UI downloads and the unauthenticated external DoH route are
   disabled; and

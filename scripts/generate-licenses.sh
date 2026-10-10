@@ -18,7 +18,7 @@ temporary="$(mktemp "$project_dir/target/third-party-licenses.XXXXXXXX.raw")"
 trap 'rm -f -- "$temporary"' EXIT
 
 cd "$project_dir"
-cargo about generate \
+cargo-about generate \
   --locked \
   --all-features \
   --fail \

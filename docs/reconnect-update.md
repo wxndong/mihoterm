@@ -90,7 +90,9 @@ $ mihoterm doctor
 
 Activation preserves the current leaf when it is inside the boundary; it does
 not rotate a working route to the generated fallback's first node.
-The named selector defines the complete node boundary. Static nested groups are
+The named static selector or fallback defines the complete node boundary.
+A managed upstream fallback is converted to a selector in the generated profile;
+the active leaf stays pinned so native fallback and managed recovery do not race. Static nested groups are
 expanded with cycle detection and deduplication; DIRECT/REJECT and unrelated
 nodes are excluded. Dynamic providers or include-all membership are rejected
 rather than silently widening or partially interpreting the boundary. The
@@ -100,13 +102,14 @@ still-valid selection; missing or invalid policy members retain the previous
 working revision. Explicit source replacement follows the compatibility rules
 in [profiles](profiles.md).
 
-The generated fallback checks the Codex target every 30 seconds. The managed
-monitor checks every 15 seconds and requires two failed observations before
+The managed generated member is also a selector, so choosing it cannot activate
+a second native failover controller. The managed monitor checks every 15 seconds and requires failed observations sustained for at least one minute before
 probing alternative leaves, four at a time. Each candidate must pass two checks
 and the selected route is checked again before the selection is committed.
 A bounded session-lock retry prevents controller checks from starving recovery.
 Selection changes preserve listeners and established streams. There is a
-120-second switch cooldown and a 300-second exclusion of the previous node.
+five-minute switch cooldown and a thirty-minute exclusion of the previous node.
+All automatic switch attempts share a persisted limit of two per hour.
 When every eligible node fails, the monitor records a degraded result and never
 escapes into another GLOBAL group. These timings are scheduling intervals, not
 an end-to-end recovery deadline.
@@ -131,10 +134,13 @@ errors are excluded. Missing, busy or incompatible databases are reported as
 `unavailable-probes-only`; network checks continue. This adapter targets an
 internal diagnostic schema and is optional, not a requirement for proxy use.
 
-Two transport/stream warnings within ten minutes can request a trial switch even
-when short probes pass. The alternative must still pass repeated Codex probes.
-At most two such trial switches are permitted within ten minutes; the normal
-cooldown and node exclusion also apply. Trial switches remain explicitly
+TLS handshake EOF, connection timeouts and the known stream transport errors
+are recognized. Only the first retry contributes to the failed-request count;
+later retries update the duration of that failure episode. Transport failures
+must span at least one minute without a quiet gap longer than one minute before
+a trial switch is considered, even when short probes pass. The alternative must
+still pass repeated Codex probes. The shared hourly switch budget, cooldown and
+node exclusion apply to both stream trials and failed-probe recovery. Trial switches remain explicitly
 unverified for streaming: an unauthenticated HEAD result cannot establish a
 successful authenticated model response. A node change helps subsequent
 requests and does not migrate or close an existing TCP stream.
@@ -177,3 +183,22 @@ still-running release or the verified rollback copy before that cutover.
 - [Codex workspace-routing regression report](https://github.com/openai/codex/issues/48476)
   distinguishes authenticated bootstrap requests from inference reachability.
   This is why release validation also runs a separate real Codex canary.
+
+## v0.1.1 endpoint checks
+
+Managed recovery sends an empty, unauthenticated POST to
+`https://chatgpt.com/backend-api/codex/responses`. Only HTTP 401 is reachable;
+403 with `cf-mitigated: challenge` is a challenge. Redirects, 405, unexpected
+success and transport errors are not positive evidence. Requests carry no model
+input, Authorization or cookies. Each allowed leaf has an authenticated loopback
+HTTP probe listener, so testing a candidate does not change the active selection.
+The group can contain at most 64 static leaves. Restart the managed proxy when
+upgrading from v0.1.0 to create these listeners. Legacy unmanaged HEAD checks are
+retained for compatibility and do not certify Codex responses-path health.
+
+The probe client's TLS fingerprint differs from Codex. Acceptance needs real
+Codex streams and an observation window without unexpected exit changes; short
+401 probes alone never establish long-stream stability. Global managed mode
+routes all proxied traffic to one leaf; generated OpenAI rules also pin the
+relevant domain family to the managed selector in rule mode. Managed recovery
+continues to require the chosen group in GLOBAL.

@@ -7,6 +7,37 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-10
+
+### Added
+
+- Explicit `tun status|enable|disable` with durable, owner-only settings, Linux
+  core capability checks, current-UID capture and private-network exclusions.
+  TUN remains disabled by default and never comes from subscription content.
+- Managed recovery can take ownership of a static upstream fallback group,
+  preserving its node boundary while converting it to a sticky selector.
+
+### Fixed
+
+- Probe Codex's real responses path with an unauthenticated POST: only 401
+  counts as reachable; Cloudflare challenges are reported separately. Private,
+  node-bound HTTP listeners probe candidates without rotating the active exit.
+  Managed checks run every minute and require a managed proxy restart on upgrade.
+- Flatten managed selectors to permitted leaves and pin OpenAI domain rules to
+  the same group, removing native fallback paths from the active managed route.
+- Recognize Codex TLS handshake EOF and connection timeout feedback, count the
+  first retry once per request, and require transport failures to persist for
+  at least one minute before automatic route changes.
+- Apply a shared two-switch hourly budget to every automatic recovery path,
+  with a five-minute cooldown and thirty-minute failed-node quarantine.
+- Preserve unread diagnostic rows when a busy database exceeds one batch.
+
+### Validation scope
+
+- Linux x86_64 portable archive, core configuration validation, automated
+  recovery and installer checks. Privileged TUN packet capture requires
+  administrator-provisioned core capabilities and is not claimed by rootless CI.
+
 ## [0.1.0] - 2026-10-02
 
 ### Added

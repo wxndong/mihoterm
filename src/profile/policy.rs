@@ -87,8 +87,27 @@ impl FallbackPolicy {
             .iter_mut()
             .find(|group| group.get("name").and_then(Value::as_str) == Some(&self.group))
             .ok_or(ProfileError::InvalidFallbackPolicy)?;
-        if group.get("type").and_then(Value::as_str) != Some("select") {
+        let group_type = group.get("type").and_then(Value::as_str);
+        if group_type != Some("select") && !(self.managed && group_type == Some("fallback")) {
             return Err(ProfileError::InvalidFallbackPolicy);
+        }
+        if self.managed {
+            // One authority controls the active exit. An upstream fallback must
+            // not independently switch a managed route or prefer its first node.
+            let mapping = group
+                .as_mapping_mut()
+                .ok_or(ProfileError::InvalidFallbackPolicy)?;
+            mapping.insert("type".into(), "select".into());
+            for key in [
+                "url",
+                "interval",
+                "timeout",
+                "lazy",
+                "expected-status",
+                "max-failed-times",
+            ] {
+                mapping.remove(Value::from(key));
+            }
         }
         let members = group
             .get_mut("proxies")
@@ -114,6 +133,7 @@ impl FallbackPolicy {
             nodes.insert(0, first);
         }
         if self.managed {
+            members.clear();
             for node in &nodes {
                 if !members.iter().any(|m| m.as_str() == Some(node)) {
                     members.push(Value::String(node.clone()));
@@ -121,14 +141,27 @@ impl FallbackPolicy {
             }
         }
         members.insert(0, Value::String(fallback_name.clone()));
-        let target = ProbeTarget::built_in()
-            .into_iter()
-            .find(|target| target.name() == "Codex")
-            .expect("the Codex health target must exist");
+        let target = if self.managed {
+            ProbeTarget::built_in()
+                .into_iter()
+                .find(|target| target.name() == "Codex")
+                .expect("the Codex health target must exist")
+        } else {
+            ProbeTarget::new(
+                "Codex",
+                "https://chatgpt.com/backend-api/codex/models",
+                "401/405",
+                5_000,
+            )
+            .expect("legacy HEAD target is valid")
+        };
         let mut fallback = Mapping::new();
         for (key, value) in [
             ("name", Value::String(fallback_name)),
-            ("type", Value::String("fallback".into())),
+            (
+                "type",
+                Value::String(if self.managed { "select" } else { "fallback" }.into()),
+            ),
             (
                 "proxies",
                 Value::Sequence(nodes.into_iter().map(Value::String).collect()),
@@ -148,7 +181,46 @@ impl FallbackPolicy {
         ] {
             fallback.insert(Value::String(key.into()), value);
         }
+        if self.managed {
+            for key in [
+                "url",
+                "expected-status",
+                "interval",
+                "timeout",
+                "lazy",
+                "max-failed-times",
+            ] {
+                fallback.remove(Value::from(key));
+            }
+        }
         groups.push(Value::Mapping(fallback));
+        if self.managed {
+            if self.group.contains(',') {
+                return Err(ProfileError::InvalidFallbackPolicy);
+            }
+            root.insert(
+                "mihoterm-managed-probe-group".into(),
+                self.group.clone().into(),
+            );
+            let rules = root
+                .entry(Value::from("rules"))
+                .or_insert_with(|| Value::Sequence(Vec::new()));
+            let rules = rules
+                .as_sequence_mut()
+                .ok_or(ProfileError::InvalidFallbackPolicy)?;
+            for prefix in [
+                "DOMAIN-SUFFIX,oaiusercontent.com",
+                "DOMAIN-SUFFIX,oaistatic.com",
+                "DOMAIN-SUFFIX,chatgpt.com",
+                "DOMAIN-SUFFIX,openai.com",
+                "GEOSITE,openai",
+            ]
+            .into_iter()
+            {
+                rules.insert(0, format!("{prefix},{}", self.group).into());
+            }
+        }
+
         let output = yaml_serde::to_string(&value)
             .map_err(|_| ProfileError::InvalidYaml)?
             .into_bytes();
@@ -222,6 +294,35 @@ mod tests {
     use yaml_serde::Value;
 
     const SOURCE: &str = "proxies:\n- {name: A, type: http}\n- {name: B, type: http}\n- {name: Outside, type: http}\nproxy-groups:\n- {name: AI, type: select, proxies: [Nested, A, B, DIRECT]}\n- {name: Nested, type: select, proxies: [Outside]}\n";
+
+    #[test]
+    fn managed_fallback_becomes_a_sticky_selector_in_the_same_boundary() {
+        let source = SOURCE.replace("name: AI, type: select", "name: AI, type: fallback");
+        let policy = FallbackPolicy {
+            group: "AI".into(),
+            preferred_proxy: Some("B".into()),
+            managed: true,
+            codex_log_db: None,
+        };
+        let value: Value =
+            yaml_serde::from_slice(&policy.apply(source.as_bytes()).unwrap()).unwrap();
+        assert_eq!(value["proxy-groups"][0]["type"].as_str(), Some("select"));
+        assert_eq!(value["rules"][0].as_str(), Some("GEOSITE,openai,AI"));
+        assert!(
+            value["rules"]
+                .as_sequence()
+                .unwrap()
+                .iter()
+                .all(|rule| !rule.as_str().unwrap().contains("DOMAIN-KEYWORD"))
+        );
+        assert_eq!(value["proxy-groups"][2]["proxies"][0].as_str(), Some("B"));
+        assert_eq!(value["proxy-groups"][2]["type"].as_str(), Some("select"));
+        let legacy = FallbackPolicy {
+            managed: false,
+            ..policy
+        };
+        assert!(legacy.apply(source.as_bytes()).is_err());
+    }
 
     #[test]
     fn managed_scope_resolves_nested_members_without_expanding_outside_it() {

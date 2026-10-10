@@ -71,9 +71,78 @@ pub(super) fn build_managed_config(
         harden_dns_bootstrap(dns);
     }
 
+    install_node_probe_listeners(root, proxy_username, proxy_password)?;
+
     yaml_serde::to_string(&value)
         .map(String::into_bytes)
         .map_err(|_| RuntimeError::ConfigurationSerialization)
+}
+
+fn install_node_probe_listeners(
+    root: &mut Mapping,
+    username: &str,
+    password: &str,
+) -> Result<(), RuntimeError> {
+    let selected_group = root
+        .get(string("mihoterm-managed-probe-group"))
+        .and_then(Value::as_str)
+        .map(|name| format!("{name} Auto"));
+    let leaves = root
+        .get(string("proxies"))
+        .and_then(Value::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p["name"].as_str())
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<_>>();
+    let nodes = root
+        .get(string("proxy-groups"))
+        .and_then(Value::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter(|g| {
+            g["type"].as_str() == Some("select")
+                && g["name"]
+                    .as_str()
+                    .is_some_and(|n| Some(n) == selected_group.as_deref())
+        })
+        .flat_map(|g| g["proxies"].as_sequence().into_iter().flatten())
+        .filter_map(Value::as_str)
+        .filter(|n| leaves.contains(*n))
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<_>>();
+    if nodes.len() > 64 {
+        return Err(RuntimeError::InvalidProfile);
+    }
+    let mut listeners = Vec::new();
+    // Reserve all candidate ports together; the core validates and binds them at start.
+    let mut reservations = Vec::new();
+    for (index, node) in nodes.into_iter().enumerate() {
+        let reservation = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|_| RuntimeError::PortReservation)?;
+        let port = reservation
+            .local_addr()
+            .map_err(|_| RuntimeError::PortReservation)?
+            .port();
+        reservations.push(reservation);
+        let mut listener = Mapping::new();
+        set_string(
+            &mut listener,
+            "name",
+            &format!("mihoterm-codex-probe-{index}"),
+        );
+        set_string(&mut listener, "type", "http");
+        set_string(&mut listener, "listen", "127.0.0.1");
+        set_string(&mut listener, "proxy", &node);
+        set_number(&mut listener, "port", u64::from(port));
+        let mut user = Mapping::new();
+        set_string(&mut user, "username", username);
+        set_string(&mut user, "password", password);
+        set_sequence(&mut listener, "users", vec![Value::Mapping(user)]);
+        listeners.push(Value::Mapping(listener));
+    }
+    set_sequence(root, "listeners", listeners);
+    Ok(())
 }
 
 fn harden_dns_bootstrap(dns: &mut Mapping) {
@@ -194,6 +263,30 @@ mod tests {
     use crate::mihomo::OperatingMode;
 
     use super::build_managed_config;
+
+    #[test]
+    fn node_probe_listeners_require_a_managed_group_and_keep_private_authentication() {
+        let source = b"proxies: [{name: A, type: http}, {name: B, type: http}]\nproxy-groups: [{name: AI Auto, type: select, proxies: [A, B]}]\nmihoterm-managed-probe-group: AI\n";
+        let bytes = build_managed_config(
+            source,
+            40001,
+            40002,
+            "controller",
+            "owner",
+            "password",
+            crate::mihomo::OperatingMode::Global,
+        )
+        .unwrap();
+        let value: yaml_serde::Value = yaml_serde::from_slice(&bytes).unwrap();
+        let listeners = value["listeners"].as_sequence().unwrap();
+        assert_eq!(listeners.len(), 2);
+        assert_ne!(listeners[0]["port"], listeners[1]["port"]);
+        for listener in listeners {
+            assert_eq!(listener["listen"].as_str(), Some("127.0.0.1"));
+            assert_eq!(listener["users"][0]["password"].as_str(), Some("password"));
+            assert!(matches!(listener["proxy"].as_str(), Some("A" | "B")));
+        }
+    }
 
     #[test]
     fn runtime_configuration_disables_unsafe_inbounds_and_system_changes() {

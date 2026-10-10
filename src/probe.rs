@@ -56,8 +56,8 @@ impl ProbeTarget {
             ("OpenAI API", "https://api.openai.com/v1/models", "401"),
             (
                 "Codex",
-                "https://chatgpt.com/backend-api/codex/models",
-                "401/405",
+                "https://chatgpt.com/backend-api/codex/responses",
+                "401",
             ),
             ("GitHub", "https://github.com/robots.txt", "200"),
         ]
@@ -81,6 +81,10 @@ impl ProbeTarget {
     #[must_use]
     pub fn timeout_ms(&self) -> u32 {
         self.timeout_ms
+    }
+
+    pub(crate) fn is_codex_post(&self) -> bool {
+        self.url.as_str() == "https://chatgpt.com/backend-api/codex/responses"
     }
 
     pub(crate) fn url(&self) -> &Url {
@@ -202,7 +206,7 @@ mod tests {
         assert_eq!(targets.len(), 4);
         assert_eq!(targets[0].expected(), "204");
         assert_eq!(targets[1].expected(), "401");
-        assert_eq!(targets[2].expected(), "401/405");
+        assert_eq!(targets[2].expected(), "401");
         assert_eq!(targets[2].url().host_str(), Some("chatgpt.com"));
         assert_eq!(targets[3].expected(), "200");
     }
@@ -259,7 +263,7 @@ mod tests {
         for alias in ["codex", "OpenAI / Codex", "openai/codex"] {
             let selected = select_probe_targets(&targets, &[alias.into()]).unwrap();
             assert_eq!(selected[0].url().host_str(), Some("chatgpt.com"));
-            assert_eq!(selected[0].expected(), "401/405");
+            assert_eq!(selected[0].expected(), "401");
         }
     }
 

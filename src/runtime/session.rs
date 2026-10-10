@@ -778,6 +778,7 @@ impl SessionManager {
             &record.proxy_password,
             mode,
         )?;
+        let next = super::tun::TunSettings::load(&self.state_root)?.apply(next)?;
         let next = String::from_utf8(next).map_err(|_| RuntimeError::ConfigurationSerialization)?;
         let runtime_config = record.runtime_dir.join("runtime.yaml");
         let previous = read_private_profile(&runtime_config)?;
@@ -940,6 +941,13 @@ impl ManagedSession {
             Some(self.record.controller_secret.clone()),
             timeout,
         )
+        .map(|client| {
+            client.with_node_probes(
+                self.record.runtime_dir.join("runtime.yaml"),
+                self.record.proxy_username.clone(),
+                self.record.proxy_password.clone(),
+            )
+        })
         .map_err(|_| RuntimeError::ApiInitialization)
     }
 
@@ -1324,7 +1332,23 @@ async fn observe_session_health(session: &ManagedSession) -> HealthObservation {
             selection: None,
         };
     };
+    let managed_codex = read_private_profile(&session.record.runtime_dir.join("runtime.yaml"))
+        .ok()
+        .and_then(|bytes| yaml_serde::from_slice::<yaml_serde::Value>(&bytes).ok())
+        .is_some_and(|value| value["mihoterm-managed-probe-group"].as_str().is_some());
     let results = stream::iter(ProbeTarget::built_in().into_iter().map(|target| {
+        let target = if target.is_codex_post() && !managed_codex {
+            ProbeTarget::new(
+                "Codex",
+                "https://chatgpt.com/backend-api/codex/models",
+                "401/405",
+                5_000,
+            )
+            .expect("legacy HEAD target is valid")
+        } else {
+            target
+        };
+
         let client = client.clone();
         let group_name = group_name.clone();
         async move {

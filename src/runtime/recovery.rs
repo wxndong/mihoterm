@@ -22,9 +22,12 @@ use crate::{
 
 use super::{RecoveryOutcome, RuntimeError};
 
-const CHECK_INTERVAL: u64 = 15;
-const SWITCH_COOLDOWN: u64 = 120;
-const QUARANTINE_SECONDS: u64 = 300;
+const CHECK_INTERVAL: u64 = 60;
+const SWITCH_COOLDOWN: u64 = 300;
+const QUARANTINE_SECONDS: u64 = 1800;
+const FAILURE_DURATION: u64 = 60;
+const SWITCH_WINDOW: u64 = 3600;
+const MAX_AUTOMATIC_SWITCHES: usize = 2;
 const SIGNAL_WINDOW: u64 = 600;
 const MAX_STATE_BYTES: u64 = 128 * 1024;
 
@@ -37,6 +40,8 @@ pub struct RecoveryState {
     pub checked_at: u64,
     pub switched_at: u64,
     pub feedback_status: String,
+    #[serde(default)]
+    pub endpoint_probe: String,
     pub events: Vec<RecoveryEvent>,
     #[serde(default)]
     failures: u32,
@@ -46,6 +51,14 @@ pub struct RecoveryState {
     feedback_since: u64,
     #[serde(default)]
     cursor: Option<i64>,
+    #[serde(default)]
+    feedback_first: u64,
+    #[serde(default)]
+    feedback_last: u64,
+    #[serde(default)]
+    failure_since: Option<u64>,
+    #[serde(default)]
+    switch_history: Vec<u64>,
     #[serde(default)]
     database_identity: Option<(u64, u64)>,
     #[serde(default)]
@@ -146,6 +159,10 @@ fn is_transport_signal(body: &str) -> bool {
         "stream disconnected before completion: error sending request",
         "websocket stream idle timeout",
         "connection reset by peer",
+        "tls handshake eof",
+        "tls handshake timeout",
+        "connection timed out",
+        "connect timeout",
     ]
     .iter()
     .any(|s| lower.contains(s))
@@ -175,18 +192,84 @@ fn feedback(path: &Path, state: &mut RecoveryState, now: u64) -> Result<u32, ()>
         return Ok(0); // Never replay errors predating activation or database rotation.
     }
     let since = now.saturating_sub(SIGNAL_WINDOW).max(state.switched_at);
-    let mut statement = db.prepare("SELECT substr(feedback_log_body,1,16384) FROM logs WHERE id>?1 AND id<=?2 AND ts>=?3 AND target='codex_core::responses_retry' AND level='WARN' ORDER BY id LIMIT 128").map_err(|_| ())?;
+    let mut statement = db.prepare("SELECT id,ts,substr(feedback_log_body,1,16384) FROM logs WHERE id>?1 AND id<=?2 AND ts>=?3 AND target='codex_core::responses_retry' AND level='WARN' ORDER BY id LIMIT 128").map_err(|_| ())?;
     let rows = statement
-        .query_map((state.cursor, max, since), |r| r.get::<_, String>(0))
+        .query_map((state.cursor, max, since), |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, u64>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
         .map_err(|_| ())?;
     let mut count = 0;
+    let mut scanned = 0;
     for row in rows {
-        if is_transport_signal(&row.map_err(|_| ())?) {
+        let (id, timestamp, body) = row.map_err(|_| ())?;
+        state.cursor = Some(id);
+        scanned += 1;
+        if !is_transport_signal(&body) {
+            continue;
+        }
+        // Expire a quiet episode; a later isolated failure is not continuous.
+        if state.feedback_first == 0
+            || timestamp < state.feedback_last
+            || timestamp.saturating_sub(state.feedback_last) > FAILURE_DURATION
+        {
+            state.feedback_first = timestamp;
+            state.feedback_count = 0;
+            count = 0;
+        }
+        state.feedback_last = timestamp;
+        // A retry sequence is one failed sampling request, not five failures.
+        if initial_retry(&body) {
             count += 1;
         }
     }
-    state.cursor = Some(max);
+    // Do not discard an unread tail when a busy database exceeds the batch cap.
+    if scanned < 128 {
+        state.cursor = Some(max);
+    }
     Ok(count)
+}
+
+fn initial_retry(body: &str) -> bool {
+    let message = body.rsplit_once("}: ").map_or(body, |(_, message)| message);
+    for (field, first) in [("retries=", "1"), ("retry_delay=", "5s")] {
+        if let Some(value) = message
+            .split_whitespace()
+            .find_map(|word| word.strip_prefix(field))
+        {
+            return value == first;
+        }
+    }
+    true
+}
+
+fn stream_failure_persisted(state: &RecoveryState, now: u64) -> bool {
+    state.feedback_first != 0
+        && state.feedback_last.saturating_sub(state.feedback_first) >= FAILURE_DURATION
+        && now >= state.feedback_last
+        && now - state.feedback_last <= FAILURE_DURATION
+}
+
+fn automatic_budget_available(state: &mut RecoveryState, now: u64) -> bool {
+    // Migrate the previous state format without forgetting successful switches.
+    if state.switch_history.is_empty() {
+        state
+            .switch_history
+            .extend(state.events.iter().filter_map(|event| {
+                matches!(
+                    event.reason.as_str(),
+                    "stream-feedback-trial-switch" | "confirmed-probe-failover"
+                )
+                .then_some(event.at)
+            }));
+    }
+    state
+        .switch_history
+        .retain(|at| *at <= now && now - *at < SWITCH_WINDOW);
+    state.switch_history.len() < MAX_AUTOMATIC_SWITCHES
 }
 
 fn target() -> ProbeTarget {
@@ -287,6 +370,9 @@ async fn recover(
         state.feedback_count = 0;
         state.feedback_since = now;
         state.failures = 0;
+        state.failure_since = None;
+        state.feedback_first = 0;
+        state.feedback_last = 0;
         // Attribute only future feedback to this newly observed node.
         state.cursor = None;
     }
@@ -306,13 +392,37 @@ async fn recover(
         state.feedback_status = "disabled".into();
     }
     let target = target();
-    let healthy = client.probe_delay(&policy.group, &target).await.is_ok();
-    state.failures = if healthy {
-        0
-    } else {
-        state.failures.saturating_add(1)
+    let probe = match node.as_deref() {
+        Some(node) => client.probe_delay(node, &target).await,
+        None => Err(crate::mihomo::ApiError::CodexProbeUnavailable),
     };
-    let stream_trial = healthy && state.feedback_count >= 2;
+    state.endpoint_probe = match &probe {
+        Ok(_) => "post-401",
+        Err(crate::mihomo::ApiError::CodexChallenge) => "cloudflare-challenge",
+        Err(crate::mihomo::ApiError::CodexProbeTransport) => "transport-failed",
+        Err(crate::mihomo::ApiError::CodexProbeUnavailable) => {
+            "probe-listener-unavailable-restart-required"
+        }
+        Err(_) => "unexpected-status-or-probe-error",
+    }
+    .into();
+    let healthy = probe.is_ok();
+    if matches!(
+        probe,
+        Err(crate::mihomo::ApiError::CodexProbeUnavailable
+            | crate::mihomo::ApiError::ClientInitialization)
+    ) {
+        state.status = "probe-unavailable-no-automatic-switch".into();
+        return Ok(RecoveryOutcome::Degraded);
+    }
+    if healthy {
+        state.failures = 0;
+        state.failure_since = None;
+    } else {
+        state.failures = state.failures.saturating_add(1);
+        state.failure_since.get_or_insert(now);
+    }
+    let stream_trial = healthy && stream_failure_persisted(state, now);
     if healthy && !stream_trial {
         state.status = "short-probes-healthy-stream-unverified".into();
         return Ok(RecoveryOutcome::AlreadyHealthy);
@@ -323,7 +433,13 @@ async fn recover(
         "probe-failed"
     }
     .into();
-    if !force && state.failures < 2 && !stream_trial {
+    if !force
+        && !stream_trial
+        && (state.failures < 2
+            || state
+                .failure_since
+                .is_none_or(|since| now.saturating_sub(since) < FAILURE_DURATION))
+    {
         return Ok(RecoveryOutcome::Degraded);
     }
     if !force
@@ -334,19 +450,8 @@ async fn recover(
         state.status = "switch-cooldown".into();
         return Ok(RecoveryOutcome::Cooldown);
     }
-    if stream_trial
-        && state
-            .events
-            .iter()
-            .filter(|e| {
-                e.reason == "stream-feedback-trial-switch"
-                    && e.at <= now
-                    && now - e.at < SIGNAL_WINDOW
-            })
-            .count()
-            >= 2
-    {
-        state.status = "stream-trial-budget-exhausted".into();
+    if !force && !automatic_budget_available(state, now) {
+        state.status = "automatic-switch-budget-exhausted".into();
         return Ok(RecoveryOutcome::Degraded);
     }
     state
@@ -389,15 +494,19 @@ async fn recover(
             return Ok(RecoveryOutcome::NotApplicable);
         }
         let previous = fresh.proxies.get(&policy.group).and_then(|p| p.now.clone());
+        state.switch_history.push(now);
+        state.switched_at = now;
         client
             .select_proxy(&policy.group, &candidate)
             .await
             .map_err(|_| RuntimeError::SessionReload)?;
-        if !confirmed(client, &policy.group, &target).await {
+        if !confirmed(client, &candidate, &target).await {
             if let Some(previous) = previous {
                 let _ = client.select_proxy(&policy.group, &previous).await;
             }
-            continue;
+            state.quarantine.insert(candidate, now + QUARANTINE_SECONDS);
+            state.status = "candidate-failed-after-selection".into();
+            return Ok(RecoveryOutcome::Degraded);
         }
         if DesiredStateStore::new(root.to_owned())
             .and_then(|s| s.record_selection(&policy.group, &candidate))
@@ -428,6 +537,9 @@ async fn recover(
         state.failures = 0;
         state.feedback_count = 0;
         state.feedback_since = now;
+        state.feedback_first = 0;
+        state.feedback_last = 0;
+        state.failure_since = None;
         state.status = if stream_trial {
             "trial-switched-stream-unverified"
         } else {
@@ -483,6 +595,9 @@ mod tests {
             "idle timeout waiting for SSE",
             "Transport error: network error: error decoding response body",
             "Connection failed: error sending request",
+            "stream disconnected before completion: tls handshake eof",
+            "tls handshake timeout",
+            "connection timed out",
         ] {
             assert!(is_transport_signal(body));
         }
@@ -496,6 +611,79 @@ mod tests {
         ] {
             assert!(!is_transport_signal(body));
         }
+    }
+
+    #[test]
+    fn retries_count_once_and_require_a_sustained_failure_episode() {
+        assert!(initial_retry("tls handshake eof retries=1 max_retries=5"));
+        assert!(!initial_retry("tls handshake eof retries=2 max_retries=5"));
+        assert!(!initial_retry(
+            "tls handshake eof retries=10 max_retries=15"
+        ));
+        assert!(initial_retry("error sending request retry_delay=5s"));
+        assert!(!initial_retry("error sending request retry_delay=40s"));
+        let mut state = RecoveryState {
+            feedback_first: 1000,
+            feedback_last: 1030,
+            ..Default::default()
+        };
+        assert!(!stream_failure_persisted(&state, 1030));
+        state.feedback_last = 1060;
+        assert!(stream_failure_persisted(&state, 1060));
+        assert!(!stream_failure_persisted(&state, 1121));
+    }
+
+    #[test]
+    fn all_switch_reasons_share_a_persistent_hourly_budget() {
+        let mut state = RecoveryState::default();
+        event(
+            &mut state,
+            1000,
+            "confirmed-probe-failover",
+            Some("A".into()),
+        );
+        event(
+            &mut state,
+            1100,
+            "stream-feedback-trial-switch",
+            Some("B".into()),
+        );
+        assert!(!automatic_budget_available(&mut state, 1200));
+        for _ in 0..40 {
+            event(&mut state, 1200, "no-healthy-in-scope-candidate", None);
+        }
+        assert!(!automatic_budget_available(&mut state, 1200));
+        assert!(automatic_budget_available(&mut state, 4600));
+    }
+
+    #[test]
+    fn diagnostic_batches_do_not_lose_rows_or_count_retry_replays() {
+        let dir = std::env::temp_dir().join(format!(
+            "mihoterm-batch-{}-{}",
+            std::process::id(),
+            unix_seconds_now()
+        ));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("logs.sqlite");
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE logs(id INTEGER PRIMARY KEY,ts INTEGER,target TEXT,level TEXT,feedback_log_body TEXT)").unwrap();
+        let mut state = RecoveryState::default();
+        assert_eq!(feedback(&path, &mut state, 1000), Ok(0));
+        for i in 0..200 {
+            db.execute("INSERT INTO logs(ts,target,level,feedback_log_body) VALUES(?1,'codex_core::responses_retry','WARN',?2)",
+                (1000 + i / 2, format!("tls handshake eof retries={} max_retries=5", i % 2 + 1))).unwrap();
+        }
+        assert_eq!(feedback(&path, &mut state, 1100), Ok(64));
+        assert_eq!(state.cursor, Some(128));
+        assert_eq!(feedback(&path, &mut state, 1100), Ok(36));
+        assert_eq!(state.cursor, Some(200));
+        assert!(stream_failure_persisted(&state, 1100));
+        assert_eq!(feedback(&path, &mut state, 1100), Ok(0));
+        db.execute("INSERT INTO logs(ts,target,level,feedback_log_body) VALUES(1200,'codex_core::responses_retry','WARN','tls handshake eof retries=1 max_retries=5')", []).unwrap();
+        assert_eq!(feedback(&path, &mut state, 1200), Ok(1));
+        assert!(!stream_failure_persisted(&state, 1200));
+        drop(db);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

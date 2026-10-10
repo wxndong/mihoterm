@@ -140,6 +140,9 @@ intercept every process. Those actions require platform-specific privileges
 and have a much larger failure surface, so they are not part of the default
 installation.
 
+See [optional TUN mode](tun.md) for explicit, UID-scoped capture with an
+administrator-provisioned core.
+
 ## Uninstall
 
 Remove the installed application, stop only its exact tracked Mihomo process,

@@ -2,6 +2,14 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum RuntimeError {
+    #[error(
+        "TUN requires /dev/net/tun and administrator-provisioned CAP_NET_ADMIN and CAP_NET_RAW on the Mihomo core; no settings were changed"
+    )]
+    TunPermission,
+
+    #[error("TUN settings must capture only the current user's UID")]
+    TunScope,
+
     #[error("failed to obtain cryptographically secure random data")]
     Random,
 

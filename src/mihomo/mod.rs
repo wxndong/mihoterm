@@ -8,3 +8,5 @@ pub use model::{
     Connection, ConnectionMetadata, ConnectionsResponse, DelayResponse, DelaySample, OperatingMode,
     ProxiesResponse, ProxyInfo, RuntimeConfig, VersionInfo,
 };
+
+mod node_probe;

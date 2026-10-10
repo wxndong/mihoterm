@@ -34,7 +34,20 @@ class Target(http.server.BaseHTTPRequestHandler):
         self.send_header('Content-Length', '0')
         self.end_headers()
 
+    def do_POST(self):
+        assert self.path == '/backend-api/codex/responses'
+        assert not self.headers.get('Authorization')
+        assert not self.headers.get('Cookie')
+        self.rfile.read(int(self.headers.get('Content-Length', '0')))
+        self.send_response(401 if self.server.codex_ok else 403)
+        if not self.server.codex_ok:
+            self.send_header('cf-mitigated', 'challenge')
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
     def do_GET(self):
+        if self.path != '/events':
+            return self.do_HEAD()
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
         self.send_header('Connection', 'close')
@@ -94,7 +107,7 @@ class Proxy(socketserver.ThreadingTCPServer):
         pass
 
 
-def wait_for(predicate, timeout=80):
+def wait_for(predicate, timeout=150):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         if predicate():
@@ -118,13 +131,18 @@ def main():
     base = Path(tempfile.mkdtemp(prefix='managed-recovery-', dir=args.root))
     def openssl(*argv):
         subprocess.run(['openssl', *argv], cwd=base, check=True, capture_output=True)
-    openssl('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'ca.key', '-out', 'ca.crt', '-days', '2', '-subj', '/CN=MihoTerm recovery test CA', '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign,cRLSign')
+    (base/'ca.cnf').write_text('[req]\nprompt=no\ndistinguished_name=dn\nx509_extensions=ca_ext\n[dn]\nCN=MihoTerm recovery test CA\n[ca_ext]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\n')
+    openssl('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'ca.key', '-out', 'ca.crt', '-days', '2', '-config', 'ca.cnf')
     openssl('req', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'server.key', '-out', 'server.csr', '-subj', '/CN=chatgpt.com')
     (base/'ext').write_text('subjectAltName=DNS:chatgpt.com,DNS:api.openai.com,DNS:www.gstatic.com,DNS:github.com\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n')
     openssl('x509', '-req', '-in', 'server.csr', '-CA', 'ca.crt', '-CAkey', 'ca.key', '-CAcreateserial', '-out', 'server.crt', '-days', '2', '-extfile', 'ext')
     wrapper = base/'mihomo-fixture'
     wrapper.write_text('#!/bin/sh\nexport SSL_CERT_FILE='+shlex.quote(str(base/'ca.crt'))+'\nexec '+shlex.quote(str(args.mihomo.resolve()))+' "$@"\n')
     wrapper.chmod(0o700)
+    for name in ['geosite.dat', 'geoip.dat', 'geoip.metadb']:
+        source = args.mihomo.resolve().parent / name
+        if source.exists():
+            shutil.copy2(source, base / name)
     servers = []
     targets = {}
     ports = {}
@@ -156,19 +174,21 @@ def main():
                         'proxy-groups': [{'name': 'Research fixture', 'type': 'select', 'proxies': ['Nested', 'A']},
                                          {'name': 'Nested', 'type': 'select', 'proxies': ['B', 'A']},
                                          {'name': 'Unrelated', 'type': 'fallback', 'proxies': ['Outside'], 'url': 'https://www.gstatic.com/generate_204', 'interval': 30}],
-                        'rules': ['MATCH,Research fixture']}
+                        'rules': ['MATCH,Research fixture'],
+                        'tls': {'custom-certifactes': [(base/'ca.crt').read_text()]}}
             source.write_text(json.dumps(document))
             dbpath = case/'logs.sqlite'
             db = sqlite3.connect(dbpath)
             db.execute('CREATE TABLE logs(id INTEGER PRIMARY KEY,ts INTEGER,target TEXT,level TEXT,feedback_log_body TEXT)')
             db.commit()
             env = {k:v for k,v in os.environ.items() if not k.startswith('MIHOTERM_') and k.lower() not in ('http_proxy','https_proxy','all_proxy')}
-            env.update(TMPDIR=str(case), SSL_CERT_FILE=str(base/'ca.crt'))
+            # Only the core wrapper needs the fixture CA; controller traffic is HTTP.
+            env.update(TMPDIR=str(case))
             cmd = [str(args.binary.resolve()), '--state-dir', str(case/'state'), '--runtime-dir', str(case/'runtime'), '--config', str(config)]
             def run(*argv, check=True):
                 r = subprocess.run(cmd+list(argv), env=env, capture_output=True, text=True, timeout=60)
                 if check and r.returncode:
-                    raise AssertionError('command failed: '+str(argv)+'\n'+r.stderr)
+                    raise AssertionError('command failed: '+str(argv)+'\n'+r.stdout+'\n'+r.stderr)
                 return r
             def record():
                 return json.loads((case/'runtime/session.json').read_text())
@@ -192,9 +212,9 @@ def main():
                 sock.sendall(b'CONNECT '+host.encode()+b':443 HTTP/1.1\r\nHost: '+host.encode()+b'\r\nProxy-Authorization: Basic '+token+b'\r\n\r\n')
                 assert b' 200 ' in sock.recv(4096)
                 return sock
-            def signal(body):
+            def signal(body, timestamp=None):
                 db.execute('INSERT INTO logs(ts,target,level,feedback_log_body) VALUES(?,?,?,?)',
-                           (int(time.time()),'codex_core::responses_retry','WARN',body))
+                           (int(time.time()) if timestamp is None else timestamp,'codex_core::responses_retry','WARN',body))
                 db.commit()
             supervisor = None
             watcher = None
@@ -223,12 +243,14 @@ def main():
                 if scenario in ('probe','legacy'):
                     targets['A'].codex_ok = False
                     # Google succeeds on A while the Codex endpoint fails.
-                    google = run('probe','--proxy','A','--target','Google')
-                    assert google.returncode == 0
+                    run('probe','--proxy','A','--target','Google')
+                    assert targets['A'].codex_ok is False
+                    assert run('probe','--proxy','A','--target','Codex',check=False).returncode != 0
+                    run('probe','--proxy','B','--target','Codex')
                     wait_for(lambda: selected()=='B' and state().get('active_node')=='B')
                     echo()
                     assert any(e['reason']=='confirmed-probe-failover' for e in state()['events'])
-                    results.append('Google healthy / Codex failed: automatic in-scope recovery; old stream survives: PASS')
+                    results.append('Codex POST challenged / candidate 401: automatic in-scope recovery; old stream survives: PASS')
                     targets['B'].codex_ok = False
                     run('doctor','--repair',check=False)
                     assert selected()=='B' and state()['status']=='no-healthy-in-scope-candidate'
@@ -256,8 +278,7 @@ def main():
                 else:
                     signal('HTTP 429 idle timeout waiting for SSE')
                     signal('HTTP 401 error decoding response body')
-                    before = state()['checked_at']
-                    wait_for(lambda: state().get('checked_at',0)>before)
+                    run('doctor','--repair')
                     assert selected()=='A'
                     results.append('auth and rate-limit feedback does not rotate nodes: PASS')
                     stream_socket = ssl.create_default_context(cafile=str(base/'ca.crt')).wrap_socket(connect('chatgpt.com'),server_hostname='chatgpt.com')
@@ -265,19 +286,24 @@ def main():
                     data=b''
                     while b'data: heartbeat' not in data: data+=stream_socket.recv(4096)
                     targets['A'].stall=True
-                    signal('stream disconnected before completion: idle timeout waiting for SSE')
-                    signal('stream disconnected before completion: Transport error: network error: error decoding response body')
+                    signal('stream disconnected before completion: tls handshake eof retries=1 max_retries=5')
+                    run('doctor','--repair')
+                    assert selected()=='A', 'one retry must not rotate a healthy HEAD route'
+                    for retry in range(2, 7):
+                        time.sleep(30)
+                        signal(f'stream disconnected before completion: tls handshake eof retries={retry} max_retries=6')
+                        if selected() == 'B':
+                            break
                     wait_for(lambda: selected()=='B' and any(e['reason']=='stream-feedback-trial-switch' for e in state().get('events',[])))
                     assert state()['active_node']=='B'
                     echo()
                     targets['A'].stall=False
                     assert b'data: heartbeat' in stream_socket.recv(4096)
                     results.append('stalled SSE with healthy HEAD: bounded feedback trial switches new requests without killing existing streams: PASS')
-                    signal('Connection failed: error sending request'); signal('Connection failed: error sending request')
-                    before=state()['checked_at']
-                    wait_for(lambda: state().get('checked_at',0)>before)
-                    assert selected()=='B' and state()['status']=='switch-cooldown'
-                    results.append('repeated feedback respects cooldown and avoids immediate switch-back: PASS')
+                    signal('Connection failed: error sending request retry_delay=5s')
+                    assert selected()=='B'
+                    assert state()['switch_history'] and state()['quarantine'].get('A',0)>int(time.time())+1500
+                    results.append('isolated feedback cannot switch back; hourly budget and thirty-minute quarantine persist: PASS')
                     run('profile','policy','fixture','--disable','--apply')
                     assert 'managed = true' not in (case/'state/profiles/fixture/source.toml').read_text()
                     echo()

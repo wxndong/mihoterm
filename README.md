@@ -3,7 +3,7 @@
 A tiny, fast, keyboard-first TUI for [Mihomo](https://github.com/MetaCubeX/mihomo)
 on Linux.
 
-> **Status:** v0.1.0 is the current release, marked Latest on GitHub. Managed mode,
+> **Status:** v0.1.1 is the current release, marked Latest on GitHub. Managed mode,
 > user-local installation, and portable packaging are validated locally before
 > each release.
 
@@ -36,6 +36,8 @@ network.
 - Probe Google, OpenAI API, Codex, or GitHub without changing the active proxy.
 - Enable persistent recovery within any explicitly chosen static subscription
   selector, including nested members, with optional bounded Codex stream feedback.
+- Optionally capture current-UID public traffic with Linux TUN after an administrator
+  provisions core capabilities; see [TUN mode](docs/tun.md).
 - Load additional HTTPS probe targets from a protected TOML configuration.
 - Import Mihomo YAML from a protected subscription URL file or local file.
 - Add, inspect in redacted form, replace, validate, update, and roll back named

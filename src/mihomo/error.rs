@@ -23,6 +23,13 @@ impl std::fmt::Display for RequestFailure {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ApiError {
+    #[error("Codex POST probe requires an active managed node-bound listener")]
+    CodexProbeUnavailable,
+    #[error("Codex POST probe transport failed")]
+    CodexProbeTransport,
+    #[error("Codex endpoint is challenged by Cloudflare")]
+    CodexChallenge,
+
     #[error("probe did not confirm the target's expected HTTP status")]
     ProbeUnverified,
 

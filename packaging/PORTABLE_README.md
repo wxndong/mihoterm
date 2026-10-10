@@ -64,3 +64,8 @@ Rust dependencies. The bundled, unmodified `mihomo` executable and
 MetaCubeX rule data are GPL-3.0-licensed. See `THIRD_PARTY_NOTICES.md`,
 `THIRD-PARTY-LICENSES.html`, both files under `licenses/`,
 `CORE-METADATA.txt`, and `DATA-METADATA.txt`.
+
+Optional Linux TUN mode is available through `mihoterm tun status|enable|disable`.
+It is disabled by default and requires administrator-provisioned core capabilities.
+Only the current UID is captured; private destinations are excluded. See
+https://github.com/wxndong/mihoterm/blob/main/docs/tun.md for setup and rollback.

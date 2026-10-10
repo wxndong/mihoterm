@@ -13,7 +13,7 @@ use clap::Parser;
 use futures_util::{StreamExt, stream};
 use mihoterm::{
     app::{App, fetch_snapshot},
-    cli::{Cli, Command, DEFAULT_CONTROLLER, ProfileCommand},
+    cli::{Cli, Command, DEFAULT_CONTROLLER, ProfileCommand, TunCommand},
     config::{AppPaths, load_controller_secret, load_probe_targets},
     doctor::stale_clients,
     mihomo::ApiClient,
@@ -185,13 +185,54 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let profile =
                 resolve_managed_profile(&store, profile.as_deref(), paths.state_dir()).await?;
             let profile_path = store.profile_path(&profile)?;
-            let mihomo = mihomo
-                .as_deref()
-                .map(Path::to_owned)
-                .unwrap_or_else(default_mihomo_executable);
+            let mihomo = mihoterm::runtime::tun::TunSettings::load(paths.state_dir())?
+                .core_path(mihomo.as_deref());
             managed_session_manager(&paths)?
                 .supervise(&profile, &profile_path, &mihomo)
                 .await?;
+            Ok(())
+        }
+        Some(Command::Tun { command }) => {
+            use mihoterm::runtime::tun::{TunSettings, permissions_available};
+            let mut settings = TunSettings::load(paths.state_dir())?;
+            let binary = match &command {
+                TunCommand::Status { mihomo } | TunCommand::Enable { mihomo } => {
+                    settings.core_path(mihomo.as_deref())
+                }
+                TunCommand::Disable => default_mihomo_executable(),
+            };
+            if matches!(command, TunCommand::Status { .. }) {
+                println!(
+                    "TUN | enabled={} | uid={} | core-permissions={} | private-routes=excluded",
+                    settings.enabled,
+                    settings.uid,
+                    permissions_available(&binary)
+                );
+                return Ok(());
+            }
+            if managed_session_manager(&paths)?.active()?.is_some() {
+                return Err(
+                    "stop the managed proxy before changing TUN settings, then start it again"
+                        .into(),
+                );
+            }
+            settings.enabled = matches!(command, TunCommand::Enable { .. });
+            settings.validate_permissions(&binary)?;
+            settings.core = if settings.enabled {
+                Some(fs::canonicalize(&binary).map_err(|_| RuntimeError::ExecutableNotFound)?)
+            } else {
+                None
+            };
+            settings.save(paths.state_dir())?;
+            println!(
+                "TUN {} for UID {}; applies on the next managed start",
+                if settings.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                settings.uid
+            );
             Ok(())
         }
         Some(Command::Stop) => {
@@ -369,9 +410,7 @@ async fn ensure_session(
     let store = ProfileStore::new(paths.profiles_dir())?;
     let profile = resolve_managed_profile(&store, profile, paths.state_dir()).await?;
     let profile_path = store.profile_path(&profile)?;
-    let mihomo = mihomo
-        .map(Path::to_owned)
-        .unwrap_or_else(default_mihomo_executable);
+    let mihomo = mihoterm::runtime::tun::TunSettings::load(paths.state_dir())?.core_path(mihomo);
     let mut child = ProcessCommand::new(env::current_exe()?)
         .arg("__session-start")
         .arg("--profile")
@@ -503,6 +542,12 @@ async fn run_doctor(paths: &AppPaths, repair: bool) -> Result<(), Box<dyn std::e
     }
 
     let mut critical_issue = false;
+    let tun = mihoterm::runtime::tun::TunSettings::load(paths.state_dir())?;
+    println!(
+        "TUN: {} | uid {} | private routes excluded",
+        if tun.enabled { "enabled" } else { "disabled" },
+        tun.uid
+    );
     let session = match manager.active() {
         Ok(Some(session)) => {
             println!(

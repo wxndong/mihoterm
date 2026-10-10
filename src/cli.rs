@@ -107,6 +107,12 @@ pub enum Command {
         mihomo: Option<PathBuf>,
     },
 
+    /// Inspect or explicitly configure UID-scoped Linux TUN capture.
+    Tun {
+        #[command(subcommand)]
+        command: TunCommand,
+    },
+
     /// Stop only the background managed proxy owned by MihoTerm.
     Stop,
 
@@ -512,4 +518,20 @@ mod tests {
             Some(Command::Exec { command, .. }) if command.len() == 2
         ));
     }
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum TunCommand {
+    /// Show persisted TUN settings and core permission prerequisites.
+    Status {
+        #[arg(long, env = "MIHOTERM_MIHOMO", value_name = "PATH")]
+        mihomo: Option<PathBuf>,
+    },
+    /// Enable capture for the current UID; stop the managed proxy first.
+    Enable {
+        #[arg(long, env = "MIHOTERM_MIHOMO", value_name = "PATH")]
+        mihomo: Option<PathBuf>,
+    },
+    /// Disable capture; stop the managed proxy first.
+    Disable,
 }

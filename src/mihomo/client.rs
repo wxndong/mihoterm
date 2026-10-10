@@ -37,6 +37,7 @@ pub struct ApiClient {
     base_url: Url,
     secret: Arc<SecretString>,
     http: reqwest::Client,
+    node_probes: Option<super::node_probe::NodeProbes>,
 }
 
 impl ApiClient {
@@ -65,7 +66,22 @@ impl ApiClient {
             base_url,
             secret: Arc::new(secret),
             http,
+            node_probes: None,
         })
+    }
+
+    pub(crate) fn with_node_probes(
+        mut self,
+        configuration: std::path::PathBuf,
+        username: String,
+        password: String,
+    ) -> Self {
+        self.node_probes = Some(super::node_probe::NodeProbes {
+            configuration,
+            username: SecretString::from(username),
+            password: SecretString::from(password),
+        });
+        self
     }
 
     #[must_use]
@@ -207,6 +223,28 @@ impl ApiClient {
         proxy: &str,
         target: &ProbeTarget,
     ) -> Result<DelayResponse, ApiError> {
+        if target.is_codex_post() {
+            let routes = self
+                .node_probes
+                .as_ref()
+                .ok_or(ApiError::CodexProbeUnavailable)?;
+            let proxies = self.proxies().await?;
+            let mut node = proxy;
+            let mut visited = std::collections::BTreeSet::new();
+            while visited.insert(node) && visited.len() <= 32 {
+                let Some(info) = proxies.proxies.get(node) else {
+                    return Err(ApiError::CodexProbeUnavailable);
+                };
+                if let Some(next) = info.now.as_deref() {
+                    node = next;
+                } else if info.all.is_empty() {
+                    return routes.probe(node).await;
+                } else {
+                    return Err(ApiError::CodexProbeUnavailable);
+                }
+            }
+            return Err(ApiError::CodexProbeUnavailable);
+        }
         let operation = "probe proxy";
         let mut endpoint = self.endpoint_segments(operation, &["proxies", proxy, "delay"])?;
         endpoint
