@@ -37,6 +37,21 @@ pub enum RuntimeError {
     #[error("the managed profile is not valid Mihomo YAML")]
     InvalidProfile,
 
+    #[error(
+        "DNS configuration references its own disabled listener from the main or bootstrap resolver; configure independent upstream DNS"
+    )]
+    DnsListenerCycle,
+
+    #[error(
+        "node DNS references the disabled DNS listener without independent provider upstreams; configure explicit direct node DNS"
+    )]
+    DnsListenerUpstreams,
+
+    #[error(
+        "mixed self-referencing DNS cannot preserve the provider policy without a listener; configure explicit direct node DNS"
+    )]
+    DnsListenerPolicy,
+
     #[error("failed to serialize the isolated runtime configuration")]
     ConfigurationSerialization,
 

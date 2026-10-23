@@ -115,22 +115,35 @@ Managed mode forces `tcp-concurrent: true`: Mihomo races the addresses of a
 node hostname instead of letting an unreachable first address exhaust a shared
 dial deadline. This is printed in the managed launch contract.
 
-When DNS is enabled and `proxy-server-nameserver` is absent, MihoTerm derives a
-bounded pool (at most eight entries) from dynamic `system` DNS and the profile's
-direct HTTPS/TLS/TCP resolvers and bootstrap IPs, including TCP alternatives.
-It also adds `system` to the bootstrap pool used to resolve DNS-server names.
-No resolver provider or subscription is embedded. Proxy-routed fragments,
-RULES routing, and certificate-verification bypasses are not imported into the
-derived node pool. Explicit node resolver settings, including an empty list,
-remain authoritative.
+Managed mode preserves the subscription's DNS pipeline: `nameserver`,
+`nameserver-policy`, `fallback`, `fallback-filter`, `default-nameserver` and
+explicit node/direct resolver settings. It does not add system DNS or local
+resolver addresses to a provider-supplied pool. When node DNS is omitted,
+Mihomo retains its normal inheritance of the provider's resolver and policy.
+Disabled or absent subscription DNS retains Mihomo's ordinary system-DNS
+behavior; MihoTerm does not turn DNS on or rewrite `/etc/resolv.conf`.
 
-Mihomo owns concurrent DNS queries, TTL caches, and failed-request handling.
-Its bundled v1.19.29 system resolver refreshes from the host configuration on
-query after a five-minute interval. MihoTerm does not rewrite system DNS,
-restart the core, clear all connections, or reload configuration on individual
-query failures. This is native resolver failover, not an answer-consensus or
-DNS-poisoning detector: a responsive resolver can still return an incorrect
-answer or NXDOMAIN. Explicit DNS policies should be used on such networks.
+Subscription DNS listeners remain disabled. If node/direct DNS refers only to
+that removed listener, it inherits the same provider DNS pipeline internally,
+including split-DNS policies and fallback selection. Simple mixed pools and
+node-policy references expand to the original direct upstreams. Unrelated
+local resolver services are preserved. IPv4/IPv6 loopback aliases and listener
+ports come from the profile, not an embedded provider or port number.
+
+A cycle in main/bootstrap DNS, missing independent upstreams, or a mixed or
+parameterized self-reference that cannot preserve the original policy is an
+error before the running configuration is changed. Configure explicit direct
+node resolvers for such profiles; MihoTerm will not substitute system DNS or
+silently discard policy. Failed hot application keeps the previous runtime.
+
+Global `ipv6`, DNS `ipv6`, `unified-delay` and ordinary TLS preferences retain
+subscription values. DNS override switches in other desktop clients are not
+portable profile settings and are not copied as a forced preset. Disable IPv6
+in an explicit profile when the network requires it, rather than applying a
+machine-specific default to every installation. TUN remains separately opt-in.
+
+Mihomo owns DNS caching, concurrent queries and connection reuse. MihoTerm does
+not reload the configuration or clear connections on individual DNS failures.
 
 The source profile is never rewritten.
 

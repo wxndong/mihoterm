@@ -62,7 +62,9 @@ pub enum ProfileError {
     #[error("the subscription response is not valid YAML")]
     InvalidYaml,
 
-    #[error("the YAML root must be a mapping")]
+    #[error(
+        "the subscription response must be a Mihomo YAML mapping; check whether the provider's subscription download access is enabled"
+    )]
     InvalidYamlRoot,
 
     #[error("the YAML does not contain proxies, proxy-providers, or proxy-groups")]

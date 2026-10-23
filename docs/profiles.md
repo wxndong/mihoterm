@@ -149,3 +149,15 @@ Source descriptors contain the URL or canonical local path required for future
 updates. MihoTerm does not print those values, include them in debug output, or
 send telemetry. Profile YAML commonly contains credentials and should never be
 committed.
+
+## Provider download access
+
+Some providers require enabling subscription downloads on their website or
+limit the download window. That controls fetching a new YAML document, not the
+usable lifetime of nodes already cached by MihoTerm. Provider account expiry,
+quota and later node credential changes still apply independently.
+
+A scheduled refresh cannot bypass the provider's download-access policy. A
+failed, non-Mihomo or unavailable response leaves the last validated profile
+and active proxy in place; enable access or obtain a supported long-lived
+subscription URL when unattended refresh is required.

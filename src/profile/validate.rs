@@ -46,6 +46,19 @@ proxies:
     }
 
     #[test]
+    fn provider_download_access_message_is_not_accepted_as_a_profile() {
+        let response =
+            b"Subscription downloads are disabled; enable access on the provider website.";
+        assert_eq!(
+            validate_profile(response),
+            Err(ProfileError::InvalidYamlRoot)
+        );
+        let message = ProfileError::InvalidYamlRoot.to_string();
+        assert!(message.contains("provider"));
+        assert!(!message.contains("Subscription downloads are disabled"));
+    }
+
+    #[test]
     fn rejects_yaml_without_proxy_content() {
         let result = validate_profile(b"mode: rule\nrules: []\n");
 

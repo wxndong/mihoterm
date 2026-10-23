@@ -3,7 +3,7 @@
 A tiny, fast, keyboard-first TUI for [Mihomo](https://github.com/MetaCubeX/mihomo)
 on Linux.
 
-> **Status:** v0.1.1 is the current release, marked Latest on GitHub. Managed mode,
+> **Status:** v0.1.2 is the current release, marked Latest on GitHub. Managed mode,
 > user-local installation, and portable packaging are validated locally before
 > each release.
 
@@ -39,6 +39,8 @@ network.
 - Optionally capture current-UID public traffic with Linux TUN after an administrator
   provisions core capabilities; see [TUN mode](docs/tun.md).
 - Load additional HTTPS probe targets from a protected TOML configuration.
+- Preserve subscription DNS, split-DNS policies and IPv6 preferences in managed
+  mode; safely adapt references to the disabled subscription DNS listener.
 - Import Mihomo YAML from a protected subscription URL file or local file.
 - Add, inspect in redacted form, replace, validate, update, and roll back named
   subscription profiles from the TUI or CLI.

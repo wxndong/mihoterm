@@ -7,6 +7,36 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-24
+
+### Fixed
+
+- Preserve subscription DNS, split-DNS policy, fallback and bootstrap servers
+  instead of injecting system DNS into the node resolver pool.
+- Adapt node and direct DNS references to the subscription DNS listener removed
+  by managed mode. Recognize loopback aliases, IPv4/IPv6 and arbitrary ports;
+  retain independent local resolver services and explicit node resolver policy.
+- Preserve the complete provider resolver pipeline where it can be inherited.
+  Reject cyclic or ambiguous mixed/parameterized self-references before live
+  application instead of flattening policy or falling back to unrelated DNS.
+- Explain that non-Mihomo subscription responses may require enabling download
+  access at the provider; failed downloads retain the working cached profile.
+- Update rustls, webpki and Tokio to patched compatible releases identified by
+  the release dependency audit.
+
+### Tests
+
+- Add provider-DNS regressions and an isolated real-Mihomo test with conflicting
+  DNS answers, profile replacement, rejection rollback and established streams.
+- Run the real-core DNS regression in GitHub CI on main pushes and pull requests.
+
+### Compatibility
+
+- Keep subscription IPv6, DNS IPv6, unified-delay and TLS preferences. No desktop
+  client's DNS override preset or machine-specific resolver is bundled.
+- Keep Mihomo v1.19.29 and the existing Linux x86_64 portable release scope.
+  Upgrades can be staged without restarting an active proxy or Codex process.
+
 ## [0.1.1] - 2026-10-10
 
 ### Added

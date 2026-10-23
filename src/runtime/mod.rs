@@ -1,4 +1,5 @@
 mod config;
+mod dns;
 mod error;
 mod process;
 pub mod recovery;

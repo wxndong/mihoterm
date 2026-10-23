@@ -1,6 +1,9 @@
 name: CI
 
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -19,3 +22,20 @@ jobs:
           components: clippy,rustfmt
       - name: Run local-equivalent checks
         run: ./scripts/ci-local.sh
+      - name: Verify provider DNS with checksum-pinned Mihomo
+        shell: bash
+        run: |
+          set -euo pipefail
+          core_dir="$(mktemp -d)"
+          trap 'rm -rf -- "$core_dir"' EXIT
+          version="$(awk -F '\t' '$1 == "# version" { print $2 }' packaging/mihomo-assets.tsv)"
+          IFS=$'\t' read -r asset checksum < <(awk -F '\t' '$1 == "x86_64-unknown-linux-musl" { print $2 "\t" $3 }' packaging/mihomo-assets.tsv)
+          test -n "$version" && test -n "$asset" && test -n "$checksum"
+          curl --fail --location --proto '=https' --proto-redir '=https' --silent --show-error \
+            "https://github.com/MetaCubeX/mihomo/releases/download/$version/$asset" \
+            --output "$core_dir/core.gz"
+          printf '%s  %s\n' "$checksum" "$core_dir/core.gz" | sha256sum -c -
+          gzip -dc "$core_dir/core.gz" > "$core_dir/mihomo"
+          chmod 0700 "$core_dir/mihomo"
+          python3 scripts/test-managed-dns.py --binary target/release/mihoterm \
+            --mihomo "$core_dir/mihomo" --root target
