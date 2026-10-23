@@ -95,7 +95,17 @@ def main():
     cmd = [str(args.binary.resolve()), "--state-dir", str(base / "state"),
            "--runtime-dir", str(base / "runtime"), "--config", str(config)]
     def run(*argv, check=True):
-        p = subprocess.run(cmd + list(argv), env=env, capture_output=True, text=True, timeout=40)
+        # A recovered child can accept connections before its supervisor releases
+        # the recovery lock. Stop only after that bounded operation completes;
+        # other errors still fail immediately.
+        deadline = time.monotonic() + 10
+        while True:
+            p = subprocess.run(cmd + list(argv), env=env, capture_output=True, text=True, timeout=40)
+            if (argv != ("stop",) or p.returncode == 0
+                    or "the managed proxy session is busy" not in p.stderr
+                    or time.monotonic() >= deadline):
+                break
+            time.sleep(.1)
         if check and p.returncode:
             raise AssertionError("command failed: " + argv[0] + ": " + p.stderr)
         return p
