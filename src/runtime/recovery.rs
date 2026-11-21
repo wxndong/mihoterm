@@ -191,13 +191,14 @@ fn feedback(path: &Path, state: &mut RecoveryState, now: u64) -> Result<u32, ()>
         state.database_identity = identity;
         return Ok(0); // Never replay errors predating activation or database rotation.
     }
-    let since = now.saturating_sub(SIGNAL_WINDOW).max(state.switched_at);
+    let since =
+        i64::try_from(now.saturating_sub(SIGNAL_WINDOW).max(state.switched_at)).map_err(|_| ())?;
     let mut statement = db.prepare("SELECT id,ts,substr(feedback_log_body,1,16384) FROM logs WHERE id>?1 AND id<=?2 AND ts>=?3 AND target='codex_core::responses_retry' AND level='WARN' ORDER BY id LIMIT 128").map_err(|_| ())?;
     let rows = statement
         .query_map((state.cursor, max, since), |r| {
             Ok((
                 r.get::<_, i64>(0)?,
-                r.get::<_, u64>(1)?,
+                r.get::<_, i64>(1)?,
                 r.get::<_, String>(2)?,
             ))
         })
@@ -206,6 +207,7 @@ fn feedback(path: &Path, state: &mut RecoveryState, now: u64) -> Result<u32, ()>
     let mut scanned = 0;
     for row in rows {
         let (id, timestamp, body) = row.map_err(|_| ())?;
+        let timestamp = u64::try_from(timestamp).map_err(|_| ())?;
         state.cursor = Some(id);
         scanned += 1;
         if !is_transport_signal(&body) {

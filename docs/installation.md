@@ -164,7 +164,7 @@ stops with an error instead of deleting it.
 
 ## Source builds
 
-Cloning the repository is a development workflow and requires Rust 1.88 or
+Cloning the repository is a development workflow and requires Rust 1.89 or
 newer. End users do not need the source tree or Cargo. Contributors should
 follow [Development](development.md).
 

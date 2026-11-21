@@ -61,6 +61,3 @@ validation commands.
 
 Run `./scripts/ci-local.sh` on Linux before submitting changes. See
 [Development](docs/development.md) for toolchains and isolated test commands.
-
-The default branch includes [unreleased DNS and restart fixes](CHANGELOG.md#unreleased).
-The release badge tracks published portable archives.

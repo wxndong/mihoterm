@@ -7,6 +7,8 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-22
+
 ### Fixed
 
 - Keep subscription DNS listeners on loopback when node or direct DNS depends on
@@ -15,6 +17,16 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   place.
 - Retry saved selector choices while the controller is loading its proxies,
   then restore the choices that are still available.
+
+### Security
+
+- Update bundled SQLite and Rustix to versions that address
+  [RUSTSEC-2026-0459](https://rustsec.org/advisories/RUSTSEC-2026-0459.html) and
+  [RUSTSEC-2026-0486](https://rustsec.org/advisories/RUSTSEC-2026-0486.html).
+
+### Build
+
+- Building from source now requires Rust 1.89.
 
 ### Tests
 
@@ -311,7 +323,10 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Request Mihomo-compatible YAML from subscription services that select their
   response format from the client identifier.
 
-[Unreleased]: https://github.com/wxndong/mihoterm/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/wxndong/mihoterm/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/wxndong/mihoterm/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/wxndong/mihoterm/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/wxndong/mihoterm/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.7...v0.1.0
 [0.1.0-alpha.7]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.6...v0.1.0-alpha.7
 [0.1.0-alpha.6]: https://github.com/wxndong/mihoterm/compare/v0.1.0-alpha.5...v0.1.0-alpha.6

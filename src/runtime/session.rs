@@ -557,8 +557,8 @@ impl SessionManager {
                         eprintln!("mihoterm: cannot reserve legacy network recovery cooldown");
                         continue;
                     }
-                    if let Ok(client) = session.api_client(Duration::from_secs(7)) {
-                        if let Err(error) = super::recovery::tick(
+                    if let Ok(client) = session.api_client(Duration::from_secs(7))
+                        && let Err(error) = super::recovery::tick(
                             &self.state_root,
                             session.profile(),
                             &policy,
@@ -566,9 +566,8 @@ impl SessionManager {
                             false,
                         )
                         .await
-                        {
-                            eprintln!("mihoterm: scoped recovery unavailable: {error}");
-                        }
+                    {
+                        eprintln!("mihoterm: scoped recovery unavailable: {error}");
                     }
                     continue;
                 }

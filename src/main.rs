@@ -890,12 +890,12 @@ async fn run_profile(
                 .await;
                 if let Err(error) = result {
                     store.rollback(&id)?;
-                    if let Ok(Some(session)) = manager.active() {
-                        if session.profile() == id {
-                            manager
-                                .switch_profile(&id, &store.profile_path(&id)?)
-                                .await?;
-                        }
+                    if let Ok(Some(session)) = manager.active()
+                        && session.profile() == id
+                    {
+                        manager
+                            .switch_profile(&id, &store.profile_path(&id)?)
+                            .await?;
                     }
                     return Err(error);
                 }
