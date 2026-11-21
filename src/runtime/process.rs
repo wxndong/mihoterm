@@ -136,6 +136,7 @@ impl ManagedRuntime {
             .parent()
             .ok_or(RuntimeError::PersistentState)?;
         let configuration = super::tun::TunSettings::load(state_root)?.apply(configuration)?;
+        let dns_reservation = super::dns::reserve_new_listener(&configuration, None)?;
         let configuration_path = runtime_dir.join(RUNTIME_CONFIG);
         write_private(&configuration_path, &configuration)?;
         sync_directory(&runtime_dir)?;
@@ -157,6 +158,7 @@ impl ManagedRuntime {
                 serde_json::to_vec(&endpoint).map_err(|_| RuntimeError::PersistentState)?;
             persist_endpoint(endpoint_path, &contents)?;
         }
+        drop(dns_reservation);
         drop(ports);
         let child = spawn_managed_child(
             &launcher,
@@ -272,6 +274,9 @@ impl ManagedRuntime {
             return Err(RuntimeError::ProcessStatus);
         }
         let context = self.restart.as_ref().ok_or(RuntimeError::ProcessStatus)?;
+        let configuration = read_private_profile(&context.configuration)?;
+        let dns_reservation = super::dns::reserve_new_listener(&configuration, None)?;
+        drop(dns_reservation);
         self.child = Some(spawn_managed_child(
             &context.launcher,
             &context.executable,

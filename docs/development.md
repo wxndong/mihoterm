@@ -109,7 +109,7 @@ It also verifies automatic node failover, the latest profile after child
 recovery, brief controller stalls, and two repeated hangs during the external
 network recovery cooldown.
 
-    python3 scripts/test-resilience.py --binary "$CARGO_TARGET_DIR/release/mihoterm" \
+    python3 tests/integration/test-resilience.py --binary "$CARGO_TARGET_DIR/release/mihoterm" \
       --mihomo /path/to/bundled/mihomo --root "$TMPDIR"
 
 It stops only its recorded child/supervisor and retains private diagnostics
@@ -118,7 +118,7 @@ authorized external profile and must not copy its URL or credentials into Git.
 
 Run the HTTPS subscription gate against the same extracted release binary:
 
-    python3 scripts/test-subscription.py --binary /path/to/bundle/mihoterm \
+    python3 tests/integration/test-subscription.py --binary /path/to/bundle/mihoterm \
       --mihomo /path/to/bundle/mihomo --root "$TMPDIR"
 
 This gate needs Python 3 and OpenSSL. Its local CA, HTTPS server and authenticated
@@ -132,7 +132,7 @@ validation, and restoration of the old source/policy after core rejection.
 Run the scoped-recovery gate against the same extracted portable executable:
 
 ```console
-$ python3 scripts/test-managed-recovery.py --binary /path/to/bundle/mihoterm \
+$ python3 tests/integration/test-managed-recovery.py --binary /path/to/bundle/mihoterm \
     --mihomo /path/to/bundle/mihomo --root "$TMPDIR"
 ```
 

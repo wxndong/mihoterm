@@ -26,10 +26,11 @@ Localized terminal UI text remains supported.
 Run `scripts/ci-release-local.sh x86_64-unknown-linux-musl`, then test the
 executable and core extracted from that exact archive with:
 
-- `scripts/test-subscription.py`;
-- `scripts/test-managed-dns.py` (provider DNS, self-references, and safe hot reload);
-- `scripts/test-resilience.py`;
-- `scripts/test-managed-recovery.py` (also pass `--legacy-binary` when validating
+- `tests/integration/test-subscription.py`;
+- `tests/integration/test-managed-dns.py` (provider DNS, self-references, and safe hot reload);
+- `tests/integration/test-managed-hosts-dns.py` (host aliases, restart, and occupied listener ports);
+- `tests/integration/test-resilience.py`;
+- `tests/integration/test-managed-recovery.py` (also pass `--legacy-binary` when validating
   a staged upgrade from a supported older release).
 
 Use the scripts' `--help` for isolated state paths. Complete an authenticated

@@ -123,18 +123,18 @@ Mihomo retains its normal inheritance of the provider's resolver and policy.
 Disabled or absent subscription DNS retains Mihomo's ordinary system-DNS
 behavior; MihoTerm does not turn DNS on or rewrite `/etc/resolv.conf`.
 
-Subscription DNS listeners remain disabled. If node/direct DNS refers only to
-that removed listener, it inherits the same provider DNS pipeline internally,
-including split-DNS policies and fallback selection. Simple mixed pools and
-node-policy references expand to the original direct upstreams. Unrelated
-local resolver services are preserved. IPv4/IPv6 loopback aliases and listener
-ports come from the profile, not an embedded provider or port number.
+A subscription DNS listener is kept when node or direct DNS refers to it.
+Managed mode binds that listener only on loopback and rewrites its own local
+references when needed. This keeps the DNS service's hosts-domain redirects,
+split-DNS policies, and fallback behavior in the resolution path. Listeners
+that are not needed for an internal reference remain disabled. Unrelated local
+resolver services remain unchanged; no node address or provider is substituted.
 
-A cycle in main/bootstrap DNS, missing independent upstreams, or a mixed or
-parameterized self-reference that cannot preserve the original policy is an
-error before the running configuration is changed. Configure explicit direct
-node resolvers for such profiles; MihoTerm will not substitute system DNS or
-silently discard policy. Failed hot application keeps the previous runtime.
+A cycle in main/bootstrap DNS, missing independent upstreams, or a parameterized
+self-reference that cannot safely retain its options is rejected before the
+running configuration is changed. A required listener needs its configured port
+to be available. MihoTerm does not substitute system DNS or silently discard
+policy. Failed hot application keeps the previous runtime.
 
 Global `ipv6`, DNS `ipv6`, `unified-delay` and ordinary TLS preferences retain
 subscription values. DNS override switches in other desktop clients are not

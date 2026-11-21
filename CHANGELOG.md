@@ -7,6 +7,20 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep subscription DNS listeners on loopback when node or direct DNS depends on
+  them, preserving Mihomo host aliases and split-DNS policy across profile
+  updates and restarts. An occupied port leaves the current configuration in
+  place.
+- Retry saved selector choices while the controller is loading its proxies,
+  then restore the choices that are still available.
+
+### Tests
+
+- Exercise hosts redirects, live profile updates, restart persistence, and
+  occupied DNS ports against the pinned Mihomo core in CI.
+
 ## [0.1.2] - 2026-10-24
 
 ### Fixed

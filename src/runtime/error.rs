@@ -16,6 +16,9 @@ pub enum RuntimeError {
     #[error("failed to reserve isolated loopback ports")]
     PortReservation,
 
+    #[error("required local DNS listener {address} cannot be reserved")]
+    DnsListenerReservation { address: std::net::SocketAddr },
+
     #[error("the Mihomo executable could not be found")]
     ExecutableNotFound,
 
@@ -37,19 +40,15 @@ pub enum RuntimeError {
     #[error("the managed profile is not valid Mihomo YAML")]
     InvalidProfile,
 
-    #[error(
-        "DNS configuration references its own disabled listener from the main or bootstrap resolver; configure independent upstream DNS"
-    )]
+    #[error("DNS main or bootstrap resolver references its own listener, causing a DNS cycle")]
     DnsListenerCycle,
 
     #[error(
-        "node DNS references the disabled DNS listener without independent provider upstreams; configure explicit direct node DNS"
+        "node or direct DNS requires an independent provider upstream for the local DNS listener"
     )]
     DnsListenerUpstreams,
 
-    #[error(
-        "mixed self-referencing DNS cannot preserve the provider policy without a listener; configure explicit direct node DNS"
-    )]
+    #[error("the local DNS listener or its self-reference options cannot be safely preserved")]
     DnsListenerPolicy,
 
     #[error("failed to serialize the isolated runtime configuration")]

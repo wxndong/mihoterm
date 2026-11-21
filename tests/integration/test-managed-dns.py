@@ -3,6 +3,7 @@
 import argparse
 import base64
 import copy
+import errno
 import json
 import os
 from pathlib import Path
@@ -180,9 +181,16 @@ def main():
         with connect() as fresh:
             echo(fresh)
         check_port = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        check_port.bind(('127.0.0.1', removed_port))
-        check_port.close()
-        results.append('self-reference inherits the complete provider policy without opening a DNS listener')
+        try:
+            try:
+                check_port.bind(('127.0.0.1', removed_port))
+            except OSError as error:
+                assert error.errno == errno.EADDRINUSE, error
+            else:
+                raise AssertionError('required private DNS listener was not opened')
+        finally:
+            check_port.close()
+        results.append('self-reference keeps the provider DNS service on loopback')
 
         third = document(3)
         third['dns']['proxy-server-nameserver'] = [good_dns]
@@ -196,8 +204,9 @@ def main():
         descriptor = base / 'state/profiles/fixture/source.toml'
         previous = profile.read_bytes(), descriptor.read_bytes()
         rejected = copy.deepcopy(third)
-        rejected['dns']['proxy-server-nameserver'] = [self_dns, good_dns]
-        failure = run('profile', 'source', 'fixture', '--file', source('ambiguous', rejected), '--apply', check=False)
+        rejected['dns']['proxy-server-nameserver'] = [self_dns]
+        rejected['dns']['nameserver'] = [self_dns]
+        failure = run('profile', 'source', 'fixture', '--file', source('cyclic', rejected), '--apply', check=False)
         assert failure.returncode != 0 and 'DNS' in failure.stderr
         assert (profile.read_bytes(), descriptor.read_bytes()) == previous
         echo(held)

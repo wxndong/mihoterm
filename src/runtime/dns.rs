@@ -56,48 +56,21 @@ pub(super) fn prepare_managed_dns(dns: &mut Mapping) -> Result<(), RuntimeError>
         }
     }
 
-    let complex = !values(dns.get(key("fallback"))).is_empty()
-        || dns
-            .get(key("nameserver-policy"))
-            .and_then(Value::as_mapping)
-            .is_some_and(|v| !v.is_empty());
-    let has_node_policy = dns
-        .get(key("proxy-server-nameserver-policy"))
-        .and_then(Value::as_mapping)
-        .is_some_and(|v| !v.is_empty());
-    let respect_rules = dns.get(key("respect-rules")).and_then(Value::as_bool) == Some(true);
+    // A DNS listener applies Mihomo's host aliases and other service-level
+    // transformations. Pointing node lookups directly at its upstreams skips
+    // that processing, so keep the configured resolver path on loopback.
+    let private_listener = private_listener(&listener)?;
+    dns.insert(key("listen"), key(&private_listener.to_string()));
+    for field in [
+        "proxy-server-nameserver",
+        "proxy-server-nameserver-policy",
+        "direct-nameserver",
+    ] {
+        if let Some(value) = dns.get_mut(key(field)) {
+            rewrite_self_references(value, &listener, private_listener);
+        }
+    }
 
-    for field in ["proxy-server-nameserver", "direct-nameserver"] {
-        let resolvers = values(dns.get(key(field)));
-        if !resolvers.iter().any(|v| is_self(v, &listener)) {
-            continue;
-        }
-        // With no separate node policy, Mihomo's ordinary resolver preserves
-        // nameserver-policy and fallback semantics, unlike flattening them.
-        let can_inherit = resolvers.iter().all(|v| is_self(v, &listener))
-            && (field == "direct-nameserver" || (!has_node_policy && !respect_rules));
-        if can_inherit {
-            dns.remove(key(field));
-        } else {
-            if complex {
-                return Err(RuntimeError::DnsListenerPolicy);
-            }
-            let rewritten = expand(&resolvers, &listener, &upstreams);
-            dns.insert(key(field), Value::Sequence(rewritten));
-        }
-    }
-    if policy_self {
-        if complex {
-            return Err(RuntimeError::DnsListenerPolicy);
-        }
-        if let Some(Value::Mapping(policy)) = dns.get_mut(key("proxy-server-nameserver-policy")) {
-            for (_, value) in policy.iter_mut() {
-                if contains_self(Some(value), &listener) {
-                    *value = Value::Sequence(expand(&values(Some(value)), &listener, &upstreams));
-                }
-            }
-        }
-    }
     Ok(())
 }
 
@@ -106,6 +79,108 @@ struct Endpoint {
     host: Host<String>,
     port: u16,
     options: bool,
+}
+
+fn private_listener(listener: &Endpoint) -> Result<SocketAddr, RuntimeError> {
+    if listener.port == 0 {
+        return Err(RuntimeError::DnsListenerPolicy);
+    }
+    let ip = match &listener.host {
+        Host::Ipv4(ip) if ip.is_loopback() => IpAddr::V4(*ip),
+        Host::Ipv6(ip) if ip.is_loopback() => IpAddr::V6(*ip),
+        Host::Ipv6(_) => IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+        Host::Ipv4(_) | Host::Domain(_) => IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+    };
+    Ok(SocketAddr::new(ip, listener.port))
+}
+
+fn rewrite_self_references(value: &mut Value, listener: &Endpoint, private: SocketAddr) {
+    match value {
+        Value::Mapping(mapping) => {
+            for child in mapping.values_mut() {
+                rewrite_self_references(child, listener, private);
+            }
+        }
+        Value::Sequence(sequence) => {
+            for child in sequence {
+                rewrite_self_references(child, listener, private);
+            }
+        }
+        Value::String(address) if is_self(&Value::String(address.clone()), listener) => {
+            let scheme = address.split_once("://").map_or("", |(scheme, _)| {
+                if scheme.eq_ignore_ascii_case("tcp") {
+                    "tcp://"
+                } else {
+                    "udp://"
+                }
+            });
+            let fragment = address
+                .split_once('#')
+                .map_or(String::new(), |(_, fragment)| format!("#{fragment}"));
+            *address = format!("{scheme}{private}{fragment}");
+        }
+        _ => {}
+    }
+}
+
+pub(super) struct DnsListenerReservation {
+    _tcp: std::net::TcpListener,
+    _udp: std::net::UdpSocket,
+}
+
+// Reserve a newly required listener before starting or applying a profile.
+// Reuse the existing listener on same-port hot reloads; it belongs to the
+// running managed core. The sockets are released just before Mihomo binds.
+pub(super) fn reserve_new_listener(
+    configuration: &[u8],
+    previous: Option<&[u8]>,
+) -> Result<Option<DnsListenerReservation>, RuntimeError> {
+    let Some(address) = configured_listener(configuration)? else {
+        return Ok(None);
+    };
+    if let Some(previous) = previous
+        && configured_listener(previous)? == Some(address)
+    {
+        return Ok(None);
+    }
+    let error = || RuntimeError::DnsListenerReservation { address };
+    let domain = if address.is_ipv4() {
+        socket2::Domain::IPV4
+    } else {
+        socket2::Domain::IPV6
+    };
+    let socket = socket2::Socket::new(domain, socket2::Type::STREAM, None).map_err(|_| error())?;
+    socket.set_reuse_address(true).map_err(|_| error())?;
+    socket.bind(&address.into()).map_err(|_| error())?;
+    socket.listen(128).map_err(|_| error())?;
+    let tcp = std::net::TcpListener::from(socket);
+    let udp = std::net::UdpSocket::bind(address).map_err(|_| error())?;
+    Ok(Some(DnsListenerReservation {
+        _tcp: tcp,
+        _udp: udp,
+    }))
+}
+
+fn configured_listener(configuration: &[u8]) -> Result<Option<SocketAddr>, RuntimeError> {
+    let root: Value =
+        yaml_serde::from_slice(configuration).map_err(|_| RuntimeError::InvalidProfile)?;
+    let Some(dns) = root.get(key("dns")).and_then(Value::as_mapping) else {
+        return Ok(None);
+    };
+    if dns.get(key("enable")).and_then(Value::as_bool) != Some(true) {
+        return Ok(None);
+    }
+    let Some(listen) = dns.get(key("listen")) else {
+        return Ok(None);
+    };
+    let address: SocketAddr = listen
+        .as_str()
+        .and_then(|value| value.parse().ok())
+        .ok_or(RuntimeError::DnsListenerPolicy)?;
+    if !address.ip().is_loopback() || address.port() == 0 {
+        return Err(RuntimeError::DnsListenerPolicy);
+    }
+    Ok(Some(address))
 }
 
 fn endpoint(value: &str) -> Option<Endpoint> {
@@ -152,7 +227,9 @@ fn endpoint(value: &str) -> Option<Endpoint> {
     Some(Endpoint {
         host,
         port: url.port().unwrap_or(53),
-        options: !matches!(url.fragment(), None | Some("DIRECT")),
+        options: url.query().is_some()
+            || !url.path().is_empty()
+            || !matches!(url.fragment(), None | Some("DIRECT")),
     })
 }
 
@@ -175,6 +252,10 @@ fn is_self(value: &Value, listener: &Endpoint) -> bool {
                 listen_ip.is_unspecified() && ip.is_loopback()
             }
             (Host::Ipv6(listen_ip), Host::Ipv6(ip)) => {
+                listen_ip.is_unspecified() && ip.is_loopback()
+            }
+            // A dual-stack IPv6 wildcard listener may serve IPv4 loopback too.
+            (Host::Ipv6(listen_ip), Host::Ipv4(ip)) => {
                 listen_ip.is_unspecified() && ip.is_loopback()
             }
             _ => false,
@@ -232,22 +313,6 @@ fn all_direct(value: Option<&Value>) -> bool {
     }
 }
 
-fn expand(resolvers: &[Value], listener: &Endpoint, upstreams: &[Value]) -> Vec<Value> {
-    let mut result = Vec::new();
-    for resolver in resolvers {
-        for value in if is_self(resolver, listener) {
-            upstreams
-        } else {
-            std::slice::from_ref(resolver)
-        } {
-            if !result.contains(value) {
-                result.push(value.clone());
-            }
-        }
-    }
-    result
-}
-
 fn values(value: Option<&Value>) -> Vec<Value> {
     match value {
         Some(Value::String(value)) if !value.trim().is_empty() => vec![key(value)],
@@ -298,12 +363,15 @@ mod tests {
     }
 
     #[test]
-    fn self_reference_inherits_full_provider_policy_and_fallback() {
+    fn self_reference_preserves_full_provider_policy_and_fallback() {
         let dns = prepare(
             "enable: true\nlisten: 127.0.0.1:15353\nproxy-server-nameserver: [udp://127.0.0.1:15353]\nnameserver: [https://resolver.example/dns-query]\nnameserver-policy: {'+.nodes.test': [tcp://192.0.2.53]}\nfallback: [tls://192.0.2.54]\n",
         );
-        assert!(!dns.contains_key(key("proxy-server-nameserver")));
-        assert!(!dns.contains_key(key("listen")));
+        assert_eq!(dns[key("listen")].as_str(), Some("127.0.0.1:15353"));
+        assert_eq!(
+            dns[key("proxy-server-nameserver")][0].as_str(),
+            Some("udp://127.0.0.1:15353")
+        );
         assert_eq!(
             dns[key("nameserver-policy")]["+.nodes.test"][0].as_str(),
             Some("tcp://192.0.2.53")
@@ -313,22 +381,69 @@ mod tests {
 
     #[test]
     fn loopback_aliases_and_wildcard_listeners_are_not_port_specific() {
-        for (listener, resolver) in [
-            ("127.0.0.1:15353", "udp://127.0.0.1:15353"),
-            ("0.0.0.0:2053", "127.0.0.1:2053"),
-            (":53", "127.0.0.1"),
-            ("[::]:2053", "tcp://[::1]:2053"),
-            ("[::1]:2053", "udp://[::1]:2053"),
-            ("localhost:2053", "udp://127.0.0.1:2053"),
-            ("127.0.0.1:2053", "tcp://LOCALHOST.:2053"),
-            ("127.0.0.1:2053", "udp://[::ffff:127.0.0.1]:2053"),
+        for (listener, resolver, private_listener, private_resolver) in [
+            (
+                "127.0.0.1:15353",
+                "udp://127.0.0.1:15353",
+                "127.0.0.1:15353",
+                "udp://127.0.0.1:15353",
+            ),
+            (
+                "0.0.0.0:2053",
+                "127.0.0.1:2053",
+                "127.0.0.1:2053",
+                "127.0.0.1:2053",
+            ),
+            (":53", "127.0.0.1", "127.0.0.1:53", "127.0.0.1:53"),
+            (
+                "[::]:2053",
+                "tcp://[::1]:2053",
+                "[::1]:2053",
+                "tcp://[::1]:2053",
+            ),
+            (
+                "[::]:2053",
+                "udp://127.0.0.1:2053",
+                "[::1]:2053",
+                "udp://[::1]:2053",
+            ),
+            (
+                "[::1]:2053",
+                "udp://[::1]:2053",
+                "[::1]:2053",
+                "udp://[::1]:2053",
+            ),
+            (
+                "localhost:2053",
+                "udp://127.0.0.1:2053",
+                "127.0.0.1:2053",
+                "udp://127.0.0.1:2053",
+            ),
+            (
+                "127.0.0.1:2053",
+                "tcp://LOCALHOST.:2053",
+                "127.0.0.1:2053",
+                "tcp://127.0.0.1:2053",
+            ),
+            (
+                "127.0.0.1:2053",
+                "udp://[::ffff:127.0.0.1]:2053",
+                "127.0.0.1:2053",
+                "udp://127.0.0.1:2053",
+            ),
         ] {
             let dns = prepare(&format!(
                 "enable: true\nlisten: '{listener}'\nproxy-server-nameserver: ['{resolver}']\nnameserver: [192.0.2.53]\n"
             ));
-            assert!(
-                !dns.contains_key(key("proxy-server-nameserver")),
-                "{listener} -> {resolver}"
+            assert_eq!(
+                dns[key("listen")].as_str(),
+                Some(private_listener),
+                "{listener}"
+            );
+            assert_eq!(
+                dns[key("proxy-server-nameserver")][0].as_str(),
+                Some(private_resolver),
+                "{resolver}"
             );
         }
     }
@@ -351,19 +466,16 @@ mod tests {
     }
 
     #[test]
-    fn mixed_node_pool_uses_provider_upstreams_and_retains_independent_entries() {
-        let dns = prepare(
-            "enable: true\nlisten: 127.0.0.1:2053\nproxy-server-nameserver: [tls://192.0.2.53, udp://127.0.0.1:2053]\nnameserver: [https://resolver.example/dns-query#DIRECT, tcp://192.0.2.54]\n",
-        );
-        let actual = values(dns.get(key("proxy-server-nameserver")));
+    fn mixed_node_pool_preserves_self_and_independent_entries() {
+        let source = "enable: true\nlisten: 127.0.0.1:2053\nproxy-server-nameserver: [tls://192.0.2.53, udp://127.0.0.1:2053]\nnameserver: [https://resolver.example/dns-query#DIRECT, tcp://192.0.2.54]\n";
+        let before = yaml(source);
+        let after = prepare(source);
         assert_eq!(
-            actual,
-            vec![
-                key("tls://192.0.2.53"),
-                key("https://resolver.example/dns-query#DIRECT"),
-                key("tcp://192.0.2.54")
-            ]
+            after[key("proxy-server-nameserver")],
+            before[key("proxy-server-nameserver")]
         );
+        assert_eq!(after[key("nameserver")], before[key("nameserver")]);
+        assert_eq!(after[key("listen")].as_str(), Some("127.0.0.1:2053"));
     }
 
     #[test]
@@ -372,26 +484,35 @@ mod tests {
             "enable: true\nlisten: 127.0.0.1:2053\nrespect-rules: true\nproxy-server-nameserver: [udp://127.0.0.1:2053]\nnameserver: [https://resolver.example/dns-query]\n",
         );
         assert_eq!(dns[key("respect-rules")].as_bool(), Some(true));
-        assert_eq!(dns[key("proxy-server-nameserver")], dns[key("nameserver")]);
+        assert_eq!(
+            dns[key("proxy-server-nameserver")][0].as_str(),
+            Some("udp://127.0.0.1:2053")
+        );
+        assert_eq!(dns[key("listen")].as_str(), Some("127.0.0.1:2053"));
     }
 
     #[test]
-    fn node_policy_self_reference_uses_the_same_provider_upstream() {
+    fn node_policy_self_reference_keeps_the_dns_service() {
         let dns = prepare(
             "enable: true\nlisten: 127.0.0.1:2053\nproxy-server-nameserver: [tls://192.0.2.53]\nproxy-server-nameserver-policy: {'+.nodes.test': udp://127.0.0.1:2053}\nnameserver: [https://resolver.example/dns-query]\n",
         );
         assert_eq!(
-            dns[key("proxy-server-nameserver-policy")]["+.nodes.test"],
-            dns[key("nameserver")]
+            dns[key("proxy-server-nameserver-policy")]["+.nodes.test"].as_str(),
+            Some("udp://127.0.0.1:2053")
         );
+        assert_eq!(dns[key("listen")].as_str(), Some("127.0.0.1:2053"));
     }
 
     #[test]
-    fn direct_self_reference_inherits_provider_dns() {
+    fn direct_self_reference_keeps_the_dns_service() {
         let dns = prepare(
             "enable: true\nlisten: 127.0.0.1:2053\ndirect-nameserver: [udp://127.0.0.1:2053]\nnameserver: [192.0.2.53]\nnameserver-policy: {'+.test': tls://192.0.2.54}\n",
         );
-        assert!(!dns.contains_key(key("direct-nameserver")));
+        assert_eq!(
+            dns[key("direct-nameserver")][0].as_str(),
+            Some("udp://127.0.0.1:2053")
+        );
+        assert_eq!(dns[key("listen")].as_str(), Some("127.0.0.1:2053"));
     }
 
     #[test]
@@ -435,21 +556,29 @@ mod tests {
     }
 
     #[test]
-    fn complex_mixed_pipeline_is_rejected_instead_of_flattened() {
-        let mut dns = yaml(
-            "enable: true\nlisten: 127.0.0.1:2053\nproxy-server-nameserver: [udp://127.0.0.1:2053, tls://192.0.2.53]\nnameserver: [192.0.2.54]\nfallback: [192.0.2.55]\n",
+    fn complex_mixed_pipeline_is_preserved_without_flattening() {
+        let source = "enable: true\nlisten: 127.0.0.1:2053\nproxy-server-nameserver: [udp://127.0.0.1:2053, tls://192.0.2.53]\nnameserver: [192.0.2.54]\nfallback: [192.0.2.55]\n";
+        let before = yaml(source);
+        let after = prepare(source);
+        assert_eq!(
+            after[key("proxy-server-nameserver")],
+            before[key("proxy-server-nameserver")]
         );
-        assert!(matches!(
-            prepare_managed_dns(&mut dns),
-            Err(RuntimeError::DnsListenerPolicy)
-        ));
+        assert_eq!(after[key("fallback")], before[key("fallback")]);
+        assert_eq!(after[key("listen")].as_str(), Some("127.0.0.1:2053"));
     }
 
     #[test]
     fn parameterized_self_reference_is_rejected_instead_of_silently_losing_options() {
-        for fragment in ["ecs=192.0.2.0/24", "DIRECT&ecs=192.0.2.0/24", "RULES"] {
+        for options in [
+            "#ecs=192.0.2.0/24",
+            "#DIRECT&ecs=192.0.2.0/24",
+            "#RULES",
+            "?prefer=ipv4",
+            "/path",
+        ] {
             let mut dns = yaml(&format!(
-                "enable: true\nlisten: 127.0.0.1:2053\nproxy-server-nameserver: ['udp://127.0.0.1:2053#{fragment}']\nnameserver: [192.0.2.53]\n"
+                "enable: true\nlisten: 127.0.0.1:2053\nproxy-server-nameserver: ['udp://127.0.0.1:2053{options}']\nnameserver: [192.0.2.53]\n"
             ));
             assert!(matches!(
                 prepare_managed_dns(&mut dns),
@@ -465,6 +594,39 @@ mod tests {
         before.remove(key("listen"));
         before.insert(key("listen-routing-mark"), Value::Number(Number::from(0)));
         assert_eq!(prepare(source), before);
+    }
+
+    #[test]
+    fn required_listener_checks_tcp_and_udp_conflicts() {
+        use std::net::{TcpListener, UdpSocket};
+        let occupied_tcp = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = occupied_tcp.local_addr().unwrap();
+        let config = format!("dns:\n  enable: true\n  listen: '{address}'\n");
+        assert!(matches!(
+            reserve_new_listener(config.as_bytes(), None),
+            Err(RuntimeError::DnsListenerReservation { .. })
+        ));
+        // A same-port reload keeps the listener held by the running core.
+        assert!(
+            reserve_new_listener(config.as_bytes(), Some(config.as_bytes()))
+                .unwrap()
+                .is_none()
+        );
+        drop(occupied_tcp);
+        let occupied_udp = UdpSocket::bind(address).unwrap();
+        assert!(matches!(
+            reserve_new_listener(config.as_bytes(), None),
+            Err(RuntimeError::DnsListenerReservation { .. })
+        ));
+        drop(occupied_udp);
+        let reservation = reserve_new_listener(config.as_bytes(), None)
+            .unwrap()
+            .unwrap();
+        assert!(TcpListener::bind(address).is_err());
+        assert!(UdpSocket::bind(address).is_err());
+        drop(reservation);
+        assert!(TcpListener::bind(address).is_ok());
+        assert!(UdpSocket::bind(address).is_ok());
     }
 
     #[test]

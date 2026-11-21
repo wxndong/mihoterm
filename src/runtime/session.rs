@@ -789,6 +789,8 @@ impl SessionManager {
             .desired
             .load()
             .map_err(|_| RuntimeError::PersistentState)?;
+        let dns_reservation = super::dns::reserve_new_listener(next.as_bytes(), Some(&previous))?;
+        drop(dns_reservation);
         if client
             .reload_configuration_preserving_listeners(&next)
             .await
@@ -1396,32 +1398,40 @@ fn recovery_cooldown_active(now: u64, last_attempt: Option<u64>) -> bool {
 async fn restore_selections(
     client: &ApiClient,
     desired: &DesiredStateSnapshot,
-) -> Result<(), ApiError> {
+) -> Result<bool, ApiError> {
     let proxies = client.proxies().await?;
+    let mut complete = true;
     for (group, selection) in &desired.selections {
         let Some(info) = proxies.proxies.get(group) else {
+            complete = false;
             continue;
         };
         if info.kind.eq_ignore_ascii_case("selector")
             && info.all.iter().any(|candidate| candidate == selection)
         {
             client.select_proxy(group, selection).await?;
+        } else {
+            complete = false;
         }
     }
-    Ok(())
+    Ok(complete)
 }
 
 async fn restore_selections_reliably(
     client: &ApiClient,
     desired: &DesiredStateSnapshot,
 ) -> Result<(), RuntimeError> {
-    for attempt in 0..3_u64 {
+    // The controller can answer /version while Mihomo is still loading its
+    // proxies. Retry missing selections briefly, rather than silently starting
+    // with DIRECT. A profile update may legitimately remove a selection; after
+    // the bounded wait, preserve the selections that still exist.
+    const ATTEMPTS: u64 = 21;
+    for attempt in 0..ATTEMPTS {
         match restore_selections(client, desired).await {
-            Ok(()) => return Ok(()),
-            Err(_) if attempt < 2 => {
-                tokio::time::sleep(Duration::from_millis(100 * (attempt + 1))).await;
-            }
-            Err(_) => return Err(RuntimeError::SessionReload),
+            Ok(true) => return Ok(()),
+            Ok(false) if attempt + 1 == ATTEMPTS => return Ok(()),
+            Err(_) if attempt + 1 == ATTEMPTS => return Err(RuntimeError::SessionReload),
+            Ok(false) | Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
         }
     }
     unreachable!("the bounded restore loop always returns")

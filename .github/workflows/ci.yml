@@ -22,7 +22,7 @@ jobs:
           components: clippy,rustfmt
       - name: Run local-equivalent checks
         run: ./scripts/ci-local.sh
-      - name: Verify provider DNS with checksum-pinned Mihomo
+      - name: Verify managed DNS with checksum-pinned Mihomo
         shell: bash
         run: |
           set -euo pipefail
@@ -37,5 +37,7 @@ jobs:
           printf '%s  %s\n' "$checksum" "$core_dir/core.gz" | sha256sum -c -
           gzip -dc "$core_dir/core.gz" > "$core_dir/mihomo"
           chmod 0700 "$core_dir/mihomo"
-          python3 scripts/test-managed-dns.py --binary target/release/mihoterm \
+          python3 tests/integration/test-managed-dns.py --binary target/release/mihoterm \
+            --mihomo "$core_dir/mihomo" --root target
+          python3 tests/integration/test-managed-hosts-dns.py --binary target/release/mihoterm \
             --mihomo "$core_dir/mihomo" --root target
